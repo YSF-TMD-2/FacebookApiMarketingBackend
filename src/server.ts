@@ -299,6 +299,64 @@ app.get("/facebook/data", (req, res) => {
   });
 });
 
+// 🔍 Endpoints Facebook de compatibilité (sans /api)
+app.post("/facebook/token", (req, res) => {
+  const origin = req.headers.origin;
+  
+  res.json({
+    message: "🎉 Facebook token endpoint accessible (compatibility)!",
+    origin: origin,
+    timestamp: new Date().toISOString(),
+    cors: {
+      allowed: true,
+      headers: {
+        'Access-Control-Allow-Origin': origin || '*',
+        'Access-Control-Allow-Credentials': 'true'
+      }
+    }
+  });
+});
+
+// 🔍 Test endpoint pour vérifier l'authentification
+app.post("/facebook/token-test", (req, res) => {
+  const origin = req.headers.origin;
+  const authHeader = req.headers.authorization;
+  
+  res.json({
+    message: "🎉 Facebook token test endpoint accessible!",
+    origin: origin,
+    timestamp: new Date().toISOString(),
+    auth: {
+      hasAuthHeader: !!authHeader,
+      authHeader: authHeader ? 'Bearer ***' : 'None'
+    },
+    cors: {
+      allowed: true,
+      headers: {
+        'Access-Control-Allow-Origin': origin || '*',
+        'Access-Control-Allow-Credentials': 'true'
+      }
+    }
+  });
+});
+
+app.get("/facebook/accounts", (req, res) => {
+  const origin = req.headers.origin;
+  
+  res.json({
+    message: "🎉 Facebook accounts endpoint accessible (compatibility)!",
+    origin: origin,
+    timestamp: new Date().toISOString(),
+    cors: {
+      allowed: true,
+      headers: {
+        'Access-Control-Allow-Origin': origin || '*',
+        'Access-Control-Allow-Credentials': 'true'
+      }
+    }
+  });
+});
+
 // 🔍 Test endpoint Facebook data spécifique
 app.get("/api/facebook/data", (req, res) => {
   const origin = req.headers.origin;
