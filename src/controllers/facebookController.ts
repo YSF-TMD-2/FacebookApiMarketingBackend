@@ -246,8 +246,11 @@ export async function getUserData(req: Request, res: Response) {
             try {
                 const accountsData = await fetchFbGraph(tokenRow.token, 'me/adaccounts?fields=id,name,account_status,currency,amount_spent');
                 adAccounts = accountsData.data || [];
+                console.log('✅ Ad accounts retrieved:', adAccounts.length, 'accounts');
+                console.log('🔍 Ad accounts data:', JSON.stringify(adAccounts, null, 2));
             } catch (error) {
-                // Ignore error for ad accounts
+                console.error('❌ Error fetching ad accounts:', error);
+                // Ne pas ignorer l'erreur, la logger
             }
 
             // Récupérer les pages
