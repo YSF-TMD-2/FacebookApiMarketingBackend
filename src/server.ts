@@ -9,17 +9,33 @@ dotenv.config();
 
 const app = express();
 
-// 🔐 CORS — Configuration spécifique pour Vercel
-const allowedOrigins = [
-  'https://facebook-api-marketing-frontend.vercel.app',
-  'https://facebook-api-marketing-frontend-it61vlegt.vercel.app',
-  'https://facebook-api-marketing-frontend-mgue4q2xn.vercel.app/',
-  'https://facebook-api-marketing-frontend-it61vlegt.vercel.app',
-  'https://facebook-api-marketing-frontend-it61vlegt.vercel.app/',
+// 🔐 CORS — Configuration générale pour Vercel avec pattern regex
+const isAllowedUrl = (origin: string): boolean => {
+  // Patterns pour détecter automatiquement les URLs autorisées
+  const patterns = [
+    // Vercel (toutes les URLs *.vercel.app)
+    /^https:\/\/[a-zA-Z0-9-]+\.vercel\.app$/,
+    
+    // Netlify (toutes les URLs *.netlify.app)
+    /^https:\/\/[a-zA-Z0-9-]+\.netlify\.app$/,
+    
+    // GitHub Pages (toutes les URLs *.github.io)
+    /^https:\/\/[a-zA-Z0-9-]+\.github\.io$/,
+    
+    // Heroku (toutes les URLs *.herokuapp.com)
+    /^https:\/\/[a-zA-Z0-9-]+\.herokuapp\.com$/,
+    
+    // Localhost (développement local)
+    /^https?:\/\/localhost(:\d+)?$/,
+    /^https?:\/\/127\.0\.0\.1(:\d+)?$/,
+    
+    // IP locales (développement)
+    /^https?:\/\/192\.168\.\d+\.\d+(:\d+)?$/,
+    /^https?:\/\/10\.\d+\.\d+\.\d+(:\d+)?$/,
+  ];
   
-  'http://localhost:5173',
-  'http://localhost:3000'
-];
+  return patterns.some(pattern => pattern.test(origin));
+};
 
 app.use(
   cors({
@@ -27,11 +43,12 @@ app.use(
       // Autoriser les requêtes sans origin (mobile apps, postman, etc.)
       if (!origin) return callback(null, true);
       
-      if (allowedOrigins.indexOf(origin) !== -1) {
+      if (isAllowedUrl(origin)) {
+        console.log('✅ CORS allowed for URL:', origin);
         callback(null, true);
       } else {
-        console.log('CORS blocked origin:', origin);
-        callback(null, true); // Autoriser quand même pour le debug
+        console.log('❌ CORS blocked origin:', origin);
+        callback(new Error('Not allowed by CORS policy'), false);
       }
     },
     credentials: true,
