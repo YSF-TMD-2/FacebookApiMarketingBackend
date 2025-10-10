@@ -1,12 +1,15 @@
 import { Router } from "express";
 import protect from "../middleware/authMiddleware.js";
-import { saveAccessToken, getFbData, getAdAccounts, getAccountCampaigns, getCampaignAdsets, getAdsetAds, updateAdStatus, disconnectFacebook, clearFacebookCache, getFacebookToken, fetchFbGraph } from "../controllers/facebookController.js";
+import { saveAccessToken, getUserData, getFbData, getAdAccounts, getAccountCampaigns, getCampaignAdsets, getAdsetAds, updateAdStatus, disconnectFacebook, clearFacebookCache, getFacebookToken, fetchFbGraph, getCompleteAnalytics, getBusinessAdAccounts, getAccountAnalytics, facebookDiagnostic, testFacebookSimple, testAdAccounts } from "../controllers/facebookController.js";
 import { Request, Response } from "../types/express.js";
 
 const router = Router();
 // store access token (sent by frontend), fetch FB data and cache
 
 router.post('/token' , saveAccessToken)
+
+// get user Facebook data
+router.get("/user-data", protect, getUserData);
 
 // get cached FB data for current user
 router.get("/data", protect, getFbData);
@@ -86,6 +89,25 @@ router.delete("/disconnect", protect, disconnectFacebook);
 
 // clear Facebook cache
 router.post("/clear-cache", protect, clearFacebookCache);
+
+// Analytics endpoints
+router.get("/analytics", protect, getCompleteAnalytics);
+router.get("/business/:businessId/accounts", protect, getBusinessAdAccounts);
+router.get("/account/:accountId/analytics", protect, getAccountAnalytics);
+
+// Diagnostic endpoints
+router.get("/test-simple", protect, testFacebookSimple);
+router.get("/test-accounts", protect, testAdAccounts);
+router.get("/diagnostic", protect, facebookDiagnostic);
+
+// Test endpoint pour vérifier l'authentification
+router.get("/test-auth", protect, (req: Request, res: Response) => {
+    res.json({
+        success: true,
+        message: "Authentication successful",
+        user: req.user
+    });
+});
 
 // Handle preflight requests for PUT
 router.options("/ads/:adId/status", (req: Request, res: Response) => {

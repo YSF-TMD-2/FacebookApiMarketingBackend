@@ -1024,48 +1024,14 @@ app.get("/api/facebook/analytics", async (req, res) => {
       if (adAccountsData.data && adAccountsData.data.length > 0) {
         console.log('🔍 Fetching real metrics with Insights API for', adAccountsData.data.length, 'ad accounts...');
         
-        for (const account of adAccountsData.data.slice(0, 3)) { // Limiter à 3 comptes pour éviter les timeouts
+        for (const account of adAccountsData.data) { // Récupérer tous les comptes publicitaires
           try {
-            // Récupérer les insights du compte (métriques réelles)
-            const insightsResponse = await fetch(`https://graph.facebook.com/v18.0/${account.id}/insights?access_token=${tokenRow.token}&fields=impressions,clicks,spend,ctr,cpc,conversion_rate&date_preset=last_30d&level=account`);
-            const insightsData = await insightsResponse.json();
-            
-            if (insightsData.data && insightsData.data.length > 0) {
-              const insights = insightsData.data[0];
-              totalSpend += parseFloat(insights.spend || 0);
-              totalImpressions += parseInt(insights.impressions || 0);
-              totalClicks += parseInt(insights.clicks || 0);
-              totalConversions += parseInt(insights.conversion_rate || 0);
-              console.log('✅ Real metrics for account', account.id, ':', {
-                spend: insights.spend,
-                impressions: insights.impressions,
-                clicks: insights.clicks,
-                ctr: insights.ctr
-              });
-            }
-
-            // Campagnes avec insights
+            // Campagnes sans insights pour éviter les erreurs
             const campaignsResponse = await fetch(`https://graph.facebook.com/v18.0/${account.id}/campaigns?access_token=${tokenRow.token}&fields=id,name,status,objective,created_time,updated_time&limit=50`);
             const campaignsData = await campaignsResponse.json();
             if (campaignsData.data) {
               totalCampaigns += campaignsData.data.length;
-              
-              // Récupérer les insights des campagnes
-              for (const campaign of campaignsData.data.slice(0, 10)) {
-                try {
-                  const campaignInsightsResponse = await fetch(`https://graph.facebook.com/v18.0/${campaign.id}/insights?access_token=${tokenRow.token}&fields=impressions,clicks,spend,ctr,cpc&date_preset=last_30d&level=campaign`);
-                  const campaignInsightsData = await campaignInsightsResponse.json();
-                  
-                  if (campaignInsightsData.data && campaignInsightsData.data.length > 0) {
-                    const campaignInsights = campaignInsightsData.data[0];
-                    totalSpend += parseFloat(campaignInsights.spend || 0);
-                    totalImpressions += parseInt(campaignInsights.impressions || 0);
-                    totalClicks += parseInt(campaignInsights.clicks || 0);
-                  }
-                } catch (error) {
-                  console.log('⚠️ Error fetching campaign insights for', campaign.id, ':', error.message);
-                }
-              }
+              console.log('✅ Campaigns for account', account.id, ':', campaignsData.data.length);
             }
 
             // Adsets
@@ -1143,6 +1109,7 @@ app.get("/api/facebook/analytics", async (req, res) => {
 app.get("/api/facebook/campaigns/:accountId", async (req, res) => {
   try {
     const { accountId } = req.params;
+    console.log('🔍 Server campaigns endpoint called for accountId:', accountId);
     const authHeader = req.headers.authorization;
     const token = authHeader ? authHeader.replace('Bearer ', '') : null;
     
@@ -1181,7 +1148,7 @@ app.get("/api/facebook/campaigns/:accountId", async (req, res) => {
 
     // Récupérer les campagnes depuis Facebook Graph API
     try {
-      const campaignsUrl = `https://graph.facebook.com/v18.0/${accountId}/campaigns?access_token=${tokenRow.token}&fields=id,name,status,objective,created_time,updated_time,start_time,end_time,budget_remaining,spend,impressions,clicks,ctr,cpc,conversion_rate`;
+      const campaignsUrl = `https://graph.facebook.com/v18.0/${accountId}/campaigns?access_token=${tokenRow.token}&fields=id,name,status,objective,created_time,updated_time`;
       const campaignsResponse = await fetch(campaignsUrl);
       const campaignsData = await campaignsResponse.json();
 
@@ -1194,6 +1161,7 @@ app.get("/api/facebook/campaigns/:accountId", async (req, res) => {
       }
 
       console.log('✅ Campaigns fetched successfully:', campaignsData.data?.length || 0, 'campaigns');
+      console.log('🔍 Campaigns data:', JSON.stringify(campaignsData.data, null, 2));
       return res.json({ 
         message: "Campaigns retrieved successfully", 
         success: true, 
