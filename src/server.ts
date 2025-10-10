@@ -13,6 +13,7 @@ const app = express();
 const allowedOrigins = [
   'https://facebook-api-marketing-frontend.vercel.app',
   'https://facebook-api-marketing-frontend-it61vlegt.vercel.app',
+  'https://facebook-api-marketing-frontend-mgue4q2xn.vercel.app/'
   'http://localhost:5173',
   'http://localhost:3000'
 ];
