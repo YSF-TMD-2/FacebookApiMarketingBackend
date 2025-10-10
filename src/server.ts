@@ -13,8 +13,11 @@ const app = express();
 const isAllowedUrl = (origin: string): boolean => {
   // Patterns pour détecter automatiquement les URLs autorisées
   const patterns = [
-    // Vercel (toutes les URLs *.vercel.app)
+    // Vercel - pattern très général pour capturer toutes les URLs Vercel
     /^https:\/\/[a-zA-Z0-9-]+\.vercel\.app$/,
+    
+    // Pattern spécifique pour les URLs avec format projects
+    /^https:\/\/frontend-[a-zA-Z0-9-]+-youssefs-projects-[a-zA-Z0-9-]+\.vercel\.app$/,
     
     // Netlify (toutes les URLs *.netlify.app)
     /^https:\/\/[a-zA-Z0-9-]+\.netlify\.app$/,
@@ -42,6 +45,8 @@ app.use(
     origin: function (origin, callback) {
       // Autoriser les requêtes sans origin (mobile apps, postman, etc.)
       if (!origin) return callback(null, true);
+      
+      console.log('🔍 CORS check for origin:', origin);
       
       if (isAllowedUrl(origin)) {
         console.log('✅ CORS allowed for URL:', origin);
@@ -96,7 +101,7 @@ app.get("/api/health", (_req, res) => {
   res.json({ status: "OK", timestamp: new Date().toISOString() });
 });
 
-// 🧪 Test endpoint pour vérifier l'hébergement
+// ✅ Test endpoint simple pour vérifier la connectivité
 app.get("/api/test", (_req, res) => {
   res.json({
     message: "🎉 Backend hébergé correctement sur Vercel !",
@@ -109,7 +114,7 @@ app.get("/api/test", (_req, res) => {
       region: process.env.VERCEL_REGION || "Non défini"
     },
     deployment: {
-      url: "https://facebook-api-marketing-backend.vercel.app",
+      url: "https://facebook-api-marketing-backend-six.vercel.app",
       status: "🚀 ACTIF",
       cors: "✅ Configuré",
       database: "✅ Supabase connecté"
@@ -201,6 +206,15 @@ app.get("/api/cors-test", (req, res) => {
   });
 });
 
+// 🧪 Test endpoint simple pour CORS
+app.get("/api/simple-test", (req, res) => {
+  res.json({
+    message: "Simple test successful!",
+    origin: req.headers.origin,
+    timestamp: new Date().toISOString()
+  });
+});
+
 // 🔍 Test endpoint Facebook data spécifique
 app.get("/api/facebook/data", (req, res) => {
   const origin = req.headers.origin;
@@ -217,6 +231,39 @@ app.get("/api/facebook/data", (req, res) => {
     timestamp: new Date().toISOString(),
     cors: {
       allowed: true,
+      headers: {
+        'Access-Control-Allow-Origin': origin || '*',
+        'Access-Control-Allow-Credentials': 'true'
+      }
+    }
+  });
+});
+
+// 🔍 Endpoint de diagnostic CORS spécifique
+app.get("/api/cors-diagnostic", (req, res) => {
+  const origin = req.headers.origin;
+  
+  // Headers CORS explicites
+  res.header('Access-Control-Allow-Origin', origin || '*');
+  res.header('Access-Control-Allow-Credentials', 'true');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, Accept, Origin');
+  
+  const isAllowed = isAllowedUrl(origin || '');
+  
+  res.json({
+    message: "🔍 CORS Diagnostic",
+    origin: origin,
+    isAllowed: isAllowed,
+    timestamp: new Date().toISOString(),
+    patterns: [
+      'Vercel: /^https:\\/\\/[a-zA-Z0-9-]+\\.vercel\\.app$/',
+      'Netlify: /^https:\\/\\/[a-zA-Z0-9-]+\\.netlify\\.app$/',
+      'GitHub: /^https:\\/\\/[a-zA-Z0-9-]+\\.github\\.io$/',
+      'Heroku: /^https:\\/\\/[a-zA-Z0-9-]+\\.herokuapp\\.com$/'
+    ],
+    cors: {
+      allowed: isAllowed,
       headers: {
         'Access-Control-Allow-Origin': origin || '*',
         'Access-Control-Allow-Credentials': 'true'
