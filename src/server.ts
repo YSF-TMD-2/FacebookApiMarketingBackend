@@ -279,6 +279,16 @@ app.get("/api/facebook/data", (req, res) => {
   });
 });
 
+// 🔍 Test endpoint Facebook data simple (sans authentification)
+app.get("/api/facebook/data-test", (req, res) => {
+  res.json({
+    message: "Facebook data test endpoint working!",
+    timestamp: new Date().toISOString(),
+    url: req.url,
+    method: req.method
+  });
+});
+
 // 🔍 Endpoint de diagnostic CORS spécifique
 app.get("/api/cors-diagnostic", (req, res) => {
   const origin = req.headers.origin;
