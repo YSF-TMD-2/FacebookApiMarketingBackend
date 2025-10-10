@@ -282,39 +282,125 @@ app.get("/test", (req, res) => {
   });
 });
 
-app.get("/facebook/data", (req, res) => {
-  const origin = req.headers.origin;
-  
-  res.json({
-    message: "🎉 Facebook data endpoint accessible (compatibility)!",
-    origin: origin,
-    timestamp: new Date().toISOString(),
-    cors: {
-      allowed: true,
-      headers: {
-        'Access-Control-Allow-Origin': origin || '*',
-        'Access-Control-Allow-Credentials': 'true'
-      }
+app.get("/facebook/data", async (req, res) => {
+  try {
+    // Récupérer le token depuis les headers ou le body
+    const authHeader = req.headers.authorization;
+    const token = authHeader ? authHeader.replace('Bearer ', '') : null;
+    
+    if (!token) {
+      return res.status(401).json({
+        message: "No access token provided",
+        success: false
+      });
     }
-  });
+    
+    // Récupérer les données utilisateur depuis Facebook
+    const userResponse = await fetch(`https://graph.facebook.com/v18.0/me?fields=id,name,email&access_token=${token}`);
+    const userData = await userResponse.json();
+    
+    if (userData.error) {
+      return res.status(400).json({
+        message: "Invalid Facebook token",
+        error: userData.error,
+        success: false
+      });
+    }
+    
+    // Récupérer les comptes publicitaires
+    let adAccounts = [];
+    try {
+      const accountsResponse = await fetch(`https://graph.facebook.com/v18.0/me/adaccounts?fields=id,name,account_status,currency&access_token=${token}`);
+      const accountsData = await accountsResponse.json();
+      adAccounts = accountsData.data || [];
+    } catch (error) {
+      console.log('Could not fetch ad accounts:', error.message);
+    }
+    
+    // Récupérer les pages
+    let pages = [];
+    try {
+      const pagesResponse = await fetch(`https://graph.facebook.com/v18.0/me/accounts?fields=id,name,category&access_token=${token}`);
+      const pagesData = await pagesResponse.json();
+      pages = pagesData.data || [];
+    } catch (error) {
+      console.log('Could not fetch pages:', error.message);
+    }
+    
+    const facebookData = {
+      user: userData,
+      adAccounts: adAccounts,
+      pages: pages,
+      businessManagers: [] // Les business managers nécessitent des permissions spéciales
+    };
+    
+    res.json({
+      message: "Facebook data retrieved successfully",
+      success: true,
+      data: facebookData,
+      meta: facebookData,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Error in Facebook data endpoint:', error);
+    res.status(500).json({
+      message: "Error retrieving Facebook data",
+      error: error.message
+    });
+  }
 });
 
-// 🔍 Endpoints Facebook de compatibilité (sans /api)
-app.post("/facebook/token", (req, res) => {
-  const origin = req.headers.origin;
-  
-  res.json({
-    message: "🎉 Facebook token endpoint accessible (compatibility)!",
-    origin: origin,
-    timestamp: new Date().toISOString(),
-    cors: {
-      allowed: true,
-      headers: {
-        'Access-Control-Allow-Origin': origin || '*',
-        'Access-Control-Allow-Credentials': 'true'
-      }
+// 🔍 Endpoints Facebook de compatibilité (sans /api) - Version avec validation
+app.post("/facebook/token", async (req, res) => {
+  try {
+    const { accessToken } = req.body;
+    
+    if (!accessToken) {
+      return res.status(400).json({ 
+        message: "Access token is required",
+        success: false 
+      });
     }
-  });
+    
+    // Valider le token avec Facebook
+    try {
+      const validationResponse = await fetch(`https://graph.facebook.com/v18.0/me?access_token=${accessToken}`);
+      const validationData = await validationResponse.json();
+      
+      if (validationData.error) {
+        return res.status(400).json({
+          message: "Invalid Facebook token",
+          error: validationData.error,
+          success: false
+        });
+      }
+      
+      console.log('🔑 Valid Facebook token received for user:', validationData.name);
+      
+      // Ici vous pourriez sauvegarder le token en base de données
+      // Pour l'instant, on le retourne dans la réponse pour que le frontend puisse l'utiliser
+      res.json({
+        message: "Access token validated and saved successfully",
+        success: true,
+        user: validationData,
+        timestamp: new Date().toISOString()
+      });
+      
+    } catch (validationError) {
+      console.error('Token validation error:', validationError);
+      return res.status(400).json({
+        message: "Failed to validate Facebook token",
+        error: validationError.message,
+        success: false
+      });
+    }
+  } catch (error) {
+    console.error('Error in Facebook token endpoint:', error);
+    res.status(500).json({
+      message: "Error processing Facebook token",
+      error: error.message
+    });
+  }
 });
 
 // 🔍 Test endpoint pour vérifier l'authentification
@@ -340,21 +426,44 @@ app.post("/facebook/token-test", (req, res) => {
   });
 });
 
-app.get("/facebook/accounts", (req, res) => {
-  const origin = req.headers.origin;
-  
-  res.json({
-    message: "🎉 Facebook accounts endpoint accessible (compatibility)!",
-    origin: origin,
-    timestamp: new Date().toISOString(),
-    cors: {
-      allowed: true,
-      headers: {
-        'Access-Control-Allow-Origin': origin || '*',
-        'Access-Control-Allow-Credentials': 'true'
-      }
+app.get("/facebook/accounts", async (req, res) => {
+  try {
+    // Récupérer le token depuis les headers
+    const authHeader = req.headers.authorization;
+    const token = authHeader ? authHeader.replace('Bearer ', '') : null;
+    
+    if (!token) {
+      return res.status(401).json({
+        message: "No access token provided",
+        success: false
+      });
     }
-  });
+    
+    // Récupérer les comptes publicitaires depuis Facebook
+    const accountsResponse = await fetch(`https://graph.facebook.com/v18.0/me/adaccounts?fields=id,name,account_status,currency,amount_spent&access_token=${token}`);
+    const accountsData = await accountsResponse.json();
+    
+    if (accountsData.error) {
+      return res.status(400).json({
+        message: "Error fetching Facebook accounts",
+        error: accountsData.error,
+        success: false
+      });
+    }
+    
+    res.json({
+      message: "Facebook accounts retrieved successfully",
+      success: true,
+      accounts: accountsData.data || [],
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Error in Facebook accounts endpoint:', error);
+    res.status(500).json({
+      message: "Error retrieving Facebook accounts",
+      error: error.message
+    });
+  }
 });
 
 // 🔍 Test endpoint Facebook data spécifique
