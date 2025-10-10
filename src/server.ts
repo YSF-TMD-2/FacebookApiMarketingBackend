@@ -255,6 +255,50 @@ app.get("/direct-test", (req, res) => {
   });
 });
 
+// 🔍 Endpoints de compatibilité (sans /api) pour le frontend
+app.get("/cors-test", (req, res) => {
+  const origin = req.headers.origin;
+  
+  res.json({
+    message: "🎉 CORS test successful (compatibility endpoint)!",
+    origin: origin,
+    timestamp: new Date().toISOString(),
+    cors: {
+      allowed: true,
+      headers: {
+        'Access-Control-Allow-Origin': origin || '*',
+        'Access-Control-Allow-Credentials': 'true'
+      }
+    }
+  });
+});
+
+app.get("/test", (req, res) => {
+  res.json({
+    message: "🎉 Test successful (compatibility endpoint)!",
+    timestamp: new Date().toISOString(),
+    backendUrl: "https://facebook-api-marketing-backend.vercel.app",
+    requestUrl: req.url
+  });
+});
+
+app.get("/facebook/data", (req, res) => {
+  const origin = req.headers.origin;
+  
+  res.json({
+    message: "🎉 Facebook data endpoint accessible (compatibility)!",
+    origin: origin,
+    timestamp: new Date().toISOString(),
+    cors: {
+      allowed: true,
+      headers: {
+        'Access-Control-Allow-Origin': origin || '*',
+        'Access-Control-Allow-Credentials': 'true'
+      }
+    }
+  });
+});
+
 // 🔍 Test endpoint Facebook data spécifique
 app.get("/api/facebook/data", (req, res) => {
   const origin = req.headers.origin;
