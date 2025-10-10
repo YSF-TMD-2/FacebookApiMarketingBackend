@@ -114,7 +114,7 @@ app.get("/api/test", (_req, res) => {
       region: process.env.VERCEL_REGION || "Non défini"
     },
     deployment: {
-      url: "https://facebook-api-marketing-backend-six.vercel.app",
+      url: "https://facebook-api-marketing-backend.vercel.app",
       status: "🚀 ACTIF",
       cors: "✅ Configuré",
       database: "✅ Supabase connecté"
@@ -180,7 +180,7 @@ app.options("/api/*", (req, res) => {
   res.status(200).end();
 });
 
-// 🧪 Test endpoint CORS spécifique
+// 🧪 Test endpoint CORS spécifique (compatibilité)
 app.get("/api/cors-test", (req, res) => {
   const origin = req.headers.origin;
   
@@ -206,6 +206,24 @@ app.get("/api/cors-test", (req, res) => {
   });
 });
 
+// 🧪 Test endpoint CORS spécifique (nouveau)
+app.get("/api/cors-test-new", (req, res) => {
+  const origin = req.headers.origin;
+  
+  res.json({
+    message: "🎉 CORS test successful (new endpoint)!",
+    origin: origin,
+    timestamp: new Date().toISOString(),
+    cors: {
+      allowed: true,
+      headers: {
+        'Access-Control-Allow-Origin': origin || '*',
+        'Access-Control-Allow-Credentials': 'true'
+      }
+    }
+  });
+});
+
 // 🧪 Test endpoint simple pour CORS
 app.get("/api/simple-test", (req, res) => {
   res.json({
@@ -219,7 +237,18 @@ app.get("/api/simple-test", (req, res) => {
 app.get("/api/url-test", (req, res) => {
   res.json({
     message: "URL test successful!",
-    backendUrl: "https://facebook-api-marketing-backend-six.vercel.app",
+    backendUrl: "https://facebook-api-marketing-backend.vercel.app",
+    requestUrl: req.url,
+    origin: req.headers.origin,
+    timestamp: new Date().toISOString()
+  });
+});
+
+// 🔍 Test endpoint direct (sans /api)
+app.get("/direct-test", (req, res) => {
+  res.json({
+    message: "Direct test successful!",
+    backendUrl: "https://facebook-api-marketing-backend.vercel.app",
     requestUrl: req.url,
     origin: req.headers.origin,
     timestamp: new Date().toISOString()
