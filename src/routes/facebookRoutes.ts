@@ -6,7 +6,7 @@ import { Request, Response } from "../types/express.js";
 const router = Router();
 // store access token (sent by frontend), fetch FB data and cache
 
-router.post('/token' , protect , saveAccessToken)
+router.post('/token' , saveAccessToken)
 
 // get cached FB data for current user
 router.get("/data", protect, getFbData);

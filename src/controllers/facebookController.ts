@@ -53,6 +53,11 @@ export async function getFacebookToken(userId: string): Promise<FacebookToken> {
 // Fonction utilitaire pour appeler l'API Facebook
 export async function fetchFbGraph(accessToken: string, endpoint: string = 'me') {
     try {
+        console.log('🔍 fetchFbGraph called with:', {
+            endpoint,
+            accessToken: accessToken ? accessToken.substring(0, 10) + '...' : 'undefined'
+        });
+
         const response = await axios.get(
             `https://graph.facebook.com/v18.0/${endpoint}`,
             {
@@ -63,8 +68,14 @@ export async function fetchFbGraph(accessToken: string, endpoint: string = 'me')
             }
         );
 
+        console.log('✅ fetchFbGraph success:', response.data);
         return response.data;
     } catch (error: any) {
+        console.error('❌ fetchFbGraph error:', {
+            message: error.message,
+            status: error.response?.status,
+            data: error.response?.data
+        });
         throw error;
     }
 }
@@ -72,19 +83,55 @@ export async function fetchFbGraph(accessToken: string, endpoint: string = 'me')
 // POST /api/facebook/token - Sauvegarder le token Facebook
 export async function saveAccessToken(req: Request, res: Response) {
     try {
-        const userId = req.user!.id;
+        console.log('🔍 saveAccessToken called with:', {
+            body: req.body,
+            user: req.user,
+            headers: req.headers
+        });
+
+        // Récupérer l'userId depuis le token JWT dans les headers
+        let userId = req.user?.id;
+        
+        if (!userId) {
+            // Essayer de décoder le token JWT depuis les headers
+            const authHeader = req.headers.authorization;
+            if (authHeader && authHeader.startsWith('Bearer ')) {
+                try {
+                    const token = authHeader.replace('Bearer ', '');
+                    // Décoder le JWT (partie payload)
+                    const payload = JSON.parse(Buffer.from(token.split('.')[1], 'base64').toString());
+                    userId = payload.sub; // Le 'sub' contient l'userId
+                    console.log('🔍 Extracted userId from JWT:', userId);
+                } catch (error) {
+                    console.error('❌ Error decoding JWT:', error);
+                }
+            }
+        }
+        
+        // Fallback si pas d'userId trouvé
+        if (!userId) {
+            userId = req.body.userId || 'temp_user';
+        }
         const { accessToken } = req.body;
+
+        console.log('🔍 Processing with userId:', userId, 'accessToken:', accessToken ? accessToken.substring(0, 10) + '...' : 'undefined');
 
         if (!accessToken) {
             return res.status(400).json({ message: "Access token is required" });
         }
 
-        // Vérifier si un token existe déjà
-        const { data: existingToken } = await supabase
+        // Vérifier si un token existe déjà pour cet utilisateur
+        console.log('🔍 Checking for existing token for userId:', userId);
+        const { data: existingToken, error: existingTokenError } = await supabase
             .from('access_tokens')
             .select('*')
             .eq('userId', userId)
             .single();
+        
+        console.log('🔍 Existing token result:', existingToken);
+        if (existingTokenError && existingTokenError.code !== 'PGRST116') {
+            console.error('❌ Error checking existing token:', existingTokenError);
+        }
 
         // Valider le token avec Facebook
         let fbData = null;
@@ -98,26 +145,61 @@ export async function saveAccessToken(req: Request, res: Response) {
         }
 
         // Créer ou mettre à jour le token
+        console.log('🔍 Processing token save/update for userId:', userId);
         if (existingToken) {
+            console.log('🔍 Updating existing token for userId:', userId);
             const { error: updateError } = await (supabase as any)
                 .from('access_tokens')
-                .update({ token: accessToken })
+                .update({ 
+                    token: accessToken,
+                    scopes: req.body.scopes || null,
+                    meta: fbData || null
+                })
                 .eq('userId', userId);
 
             if (updateError) {
+                console.error('❌ Update error:', updateError);
                 return res.status(500).json({ message: 'Database error' });
             }
+            console.log('✅ Token updated successfully');
         } else {
-            // Insertion directe avec Service Role (contourne RLS)
-            const { error: insertError } = await supabase
+            console.log('🔍 Creating new token for userId:', userId);
+            // Vérifier d'abord si ce token existe déjà pour un autre utilisateur
+            const { data: existingTokenByValue } = await supabase
                 .from('access_tokens')
-                .insert({
-                    userId: userId,
-                    token: accessToken
-                } as any);
+                .select('*')
+                .eq('token', accessToken)
+                .single();
+            
+            if (existingTokenByValue) {
+                console.log('🔍 Token already exists for another user, updating userId');
+                // Mettre à jour l'userId du token existant
+                const { error: updateUserIdError } = await supabase
+                    .from('access_tokens')
+                    .update({ userId: userId })
+                    .eq('token', accessToken);
+                
+                if (updateUserIdError) {
+                    console.error('❌ Update userId error:', updateUserIdError);
+                    return res.status(500).json({ message: 'Database error' });
+                }
+                console.log('✅ Token userId updated successfully');
+            } else {
+                // Créer un nouveau token
+                const { error: insertError } = await supabase
+                    .from('access_tokens')
+                    .insert({
+                        userId: userId,
+                        token: accessToken,
+                        scopes: req.body.scopes || null,
+                        meta: fbData || null
+                    } as any);
 
-            if (insertError) {
-                return res.status(500).json({ message: 'Database error' });
+                if (insertError) {
+                    console.error('❌ Insert error:', insertError);
+                    return res.status(500).json({ message: 'Database error' });
+                }
+                console.log('✅ Token created successfully');
             }
         }
 
