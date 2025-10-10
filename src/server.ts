@@ -426,6 +426,55 @@ app.post("/facebook/token-test", (req, res) => {
   });
 });
 
+// 🔍 Endpoint de diagnostic pour les erreurs 400
+app.get("/facebook/debug", async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    const token = authHeader ? authHeader.replace('Bearer ', '') : null;
+    
+    if (!token) {
+      return res.status(400).json({
+        message: "No token provided",
+        debug: {
+          hasAuthHeader: !!authHeader,
+          authHeader: authHeader ? 'Bearer ***' : 'None',
+          headers: req.headers
+        }
+      });
+    }
+    
+    // Tester le token avec Facebook
+    try {
+      const testResponse = await fetch(`https://graph.facebook.com/v18.0/me?access_token=${token}`);
+      const testData = await testResponse.json();
+      
+      res.json({
+        message: "Token validation successful",
+        debug: {
+          tokenLength: token.length,
+          tokenStart: token.substring(0, 10) + '...',
+          facebookResponse: testData,
+          status: testResponse.status
+        }
+      });
+    } catch (fbError) {
+      res.status(400).json({
+        message: "Token validation failed",
+        debug: {
+          tokenLength: token.length,
+          tokenStart: token.substring(0, 10) + '...',
+          facebookError: fbError.message
+        }
+      });
+    }
+  } catch (error) {
+    res.status(500).json({
+      message: "Debug endpoint error",
+      error: error.message
+    });
+  }
+});
+
 app.get("/facebook/accounts", async (req, res) => {
   try {
     // Récupérer le token depuis les headers
