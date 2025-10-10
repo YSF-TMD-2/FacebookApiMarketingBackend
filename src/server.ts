@@ -288,10 +288,45 @@ app.get("/facebook/data", async (req, res) => {
     const authHeader = req.headers.authorization;
     const token = authHeader ? authHeader.replace('Bearer ', '') : null;
     
+    console.log('🔍 /facebook/data request:', {
+      hasAuthHeader: !!authHeader,
+      tokenLength: token ? token.length : 0,
+      tokenStart: token ? token.substring(0, 10) + '...' : 'None',
+      origin: req.headers.origin,
+      userAgent: req.headers['user-agent']
+    });
+    
     if (!token) {
       return res.status(401).json({
         message: "No access token provided",
-        success: false
+        success: false,
+        debug: {
+          hasAuthHeader: !!authHeader,
+          authHeader: authHeader ? 'Bearer ***' : 'None'
+        }
+      });
+    }
+    
+    // Tester le token avec Facebook d'abord
+    console.log('🔍 Testing token with Facebook...');
+    const testResponse = await fetch(`https://graph.facebook.com/v18.0/me?access_token=${token}`);
+    const testData = await testResponse.json();
+
+    console.log('🔍 Facebook test response:', {
+      status: testResponse.status,
+      data: testData
+    });
+
+    if (testData.error) {
+      return res.status(400).json({
+        message: "Invalid Facebook token",
+        error: testData.error,
+        success: false,
+        debug: {
+          tokenLength: token.length,
+          tokenStart: token.substring(0, 10) + '...',
+          facebookError: testData.error
+        }
       });
     }
     
@@ -301,9 +336,14 @@ app.get("/facebook/data", async (req, res) => {
     
     if (userData.error) {
       return res.status(400).json({
-        message: "Invalid Facebook token",
+        message: "Error fetching user data",
         error: userData.error,
-        success: false
+        success: false,
+        debug: {
+          tokenLength: token.length,
+          tokenStart: token.substring(0, 10) + '...',
+          facebookError: userData.error
+        }
       });
     }
     
@@ -470,6 +510,30 @@ app.get("/facebook/debug", async (req, res) => {
   } catch (error) {
     res.status(500).json({
       message: "Debug endpoint error",
+      error: error.message
+    });
+  }
+});
+
+// 🔍 Endpoint de test simple pour vérifier la connectivité
+app.get("/facebook/simple-test", async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    const token = authHeader ? authHeader.replace('Bearer ', '') : null;
+    
+    res.json({
+      message: "Simple test successful",
+      debug: {
+        hasAuthHeader: !!authHeader,
+        tokenLength: token ? token.length : 0,
+        tokenStart: token ? token.substring(0, 10) + '...' : 'None',
+        origin: req.headers.origin,
+        timestamp: new Date().toISOString()
+      }
+    });
+  } catch (error) {
+    res.status(500).json({
+      message: "Simple test failed",
       error: error.message
     });
   }
