@@ -215,6 +215,17 @@ app.get("/api/simple-test", (req, res) => {
   });
 });
 
+// 🔍 Test endpoint pour vérifier l'URL de base
+app.get("/api/url-test", (req, res) => {
+  res.json({
+    message: "URL test successful!",
+    backendUrl: "https://facebook-api-marketing-backend-six.vercel.app",
+    requestUrl: req.url,
+    origin: req.headers.origin,
+    timestamp: new Date().toISOString()
+  });
+});
+
 // 🔍 Test endpoint Facebook data spécifique
 app.get("/api/facebook/data", (req, res) => {
   const origin = req.headers.origin;
