@@ -613,8 +613,14 @@ app.get("/api/facebook/data-test", (req, res) => {
   });
 });
 
-// 🔍 Endpoint pour récupérer les données Facebook de l'utilisateur connecté
-app.get("/api/facebook/user-data", async (req, res) => {
+// Endpoint supprimé - utilise celui dans facebookController.ts via les routes
+
+// Cache pour les données analytics
+const analyticsCache = new Map();
+const CACHE_DURATION = 5 * 60 * 1000; // 5 minutes
+
+// Endpoint pour vider le cache
+app.post("/api/facebook/clear-cache", async (req, res) => {
   try {
     const authHeader = req.headers.authorization;
     const token = authHeader ? authHeader.replace('Bearer ', '') : null;
@@ -631,109 +637,30 @@ app.get("/api/facebook/user-data", async (req, res) => {
     try {
       const payload = JSON.parse(Buffer.from(token.split('.')[1], 'base64').toString());
       userId = payload.sub;
-      console.log('🔍 Extracted userId from JWT:', userId);
+      console.log('🗑️ Clearing cache for userId:', userId);
     } catch (error) {
       console.error('❌ Error decoding JWT:', error);
       return res.status(401).json({ message: "Invalid token", success: false });
     }
 
-    // Récupérer le token Facebook de l'utilisateur
-    const { supabase } = await import("./supabaseClient.js");
-    const { data: tokenRow, error: tokenError } = await supabase
-      .from('access_tokens')
-      .select('*')
-      .eq('userId', userId)
-      .single() as any;
+    // Vider le cache
+    const cacheKey = `analytics_${userId}`;
+    analyticsCache.delete(cacheKey);
+    console.log('✅ Cache cleared for user:', userId);
 
-    if (tokenError || !tokenRow) {
-      return res.status(404).json({ 
-        message: "No Facebook token found for this user", 
-        success: false 
-      });
-    }
-
-    // Vérifier que tokenRow a les propriétés nécessaires
-    if (!tokenRow.token) {
-      return res.status(404).json({ 
-        message: "Invalid Facebook token in database", 
-        success: false 
-      });
-    }
-
-    // Récupérer les données Facebook avec le token
-    try {
-      const userResponse = await fetch(`https://graph.facebook.com/v18.0/me?fields=id,name,email&access_token=${tokenRow.token}`);
-      const userData = await userResponse.json();
-
-      if (userData.error) {
-        return res.status(400).json({ 
-          message: "Invalid Facebook token", 
-          error: userData.error, 
-          success: false 
-        });
-      }
-
-      // Récupérer les comptes publicitaires
-      let adAccounts = [];
-      try {
-        const accountsResponse = await fetch(`https://graph.facebook.com/v18.0/me/adaccounts?fields=id,name,account_status,currency,amount_spent&access_token=${tokenRow.token}`);
-        const accountsData = await accountsResponse.json();
-        adAccounts = accountsData.data || [];
-      } catch (error) {
-        console.log('Could not fetch ad accounts:', error.message);
-      }
-
-      // Récupérer les pages
-      let pages = [];
-      try {
-        const pagesResponse = await fetch(`https://graph.facebook.com/v18.0/me/accounts?fields=id,name,category,access_token&access_token=${tokenRow.token}`);
-        const pagesData = await pagesResponse.json();
-        pages = pagesData.data || [];
-      } catch (error) {
-        console.log('Could not fetch pages:', error.message);
-      }
-
-      const facebookData = {
-        user: userData,
-        adAccounts: adAccounts,
-        pages: pages,
-        tokenInfo: {
-          id: tokenRow.id,
-          scopes: tokenRow.scopes,
-          lastRefreshed: tokenRow.lastRefreshed,
-          createdAt: tokenRow.createdAt
-        }
-      };
-
-      res.json({ 
-        message: "Facebook data retrieved successfully", 
-        success: true, 
-        data: facebookData,
-        timestamp: new Date().toISOString() 
-      });
-
-    } catch (error) {
-      console.error('Error fetching Facebook data:', error);
-      res.status(500).json({ 
-        message: "Error fetching Facebook data", 
-        error: error.message, 
-        success: false 
-      });
-    }
-
+    return res.json({
+      success: true,
+      message: "Cache cleared successfully"
+    });
   } catch (error) {
-    console.error('Error in /api/facebook/user-data:', error);
-    res.status(500).json({ 
-      message: "Internal server error", 
-      error: error.message, 
-      success: false 
+    console.error('❌ Error clearing cache:', error);
+    return res.status(500).json({
+      success: false,
+      message: "Error clearing cache",
+      error: error.message
     });
   }
 });
-
-// Cache pour les données analytics
-const analyticsCache = new Map();
-const CACHE_DURATION = 5 * 60 * 1000; // 5 minutes
 
 // 🔍 Endpoint simple pour récupérer tous les ad accounts
 app.get("/api/facebook/adaccounts-simple", async (req, res) => {
@@ -1013,23 +940,19 @@ app.get("/api/facebook/analytics", async (req, res) => {
     }
 
     try {
-      // 1. Récupérer les informations Business Manager
+      // 1. Récupérer les informations Business Manager (avec gestion de la limite)
       console.log('🔍 Fetching Business Manager data...');
-      let businessData;
+      let businessData = { data: [] };
       try {
-        // Essayer d'abord avec des champs de base
+        // Vérifier d'abord si on a déjà atteint la limite
         const businessResponse = await fetch(`https://graph.facebook.com/v18.0/me/businesses?access_token=${tokenRow.token}&fields=id,name`);
         businessData = await businessResponse.json();
-        console.log('🔍 Business Manager response (basic fields):', JSON.stringify(businessData, null, 2));
+        console.log('🔍 Business Manager response:', JSON.stringify(businessData, null, 2));
         
-        // Si pas d'erreur, essayer d'ajouter plus de champs
-        if (!businessData.error) {
-          const extendedResponse = await fetch(`https://graph.facebook.com/v18.0/me/businesses?access_token=${tokenRow.token}&fields=id,name,primary_page,timezone_name,created_time,updated_time`);
-          const extendedData = await extendedResponse.json();
-          if (!extendedData.error) {
-            businessData = extendedData;
-            console.log('🔍 Business Manager response (extended fields):', JSON.stringify(businessData, null, 2));
-          }
+        // Si erreur de limite, on continue avec des données vides
+        if (businessData.error && businessData.error.code === 4) {
+          console.log('⚠️ Rate limit reached for Business Managers, skipping...');
+          businessData = { data: [] };
         }
       } catch (error) {
         console.error('❌ Error fetching business managers:', error);
@@ -1100,6 +1023,30 @@ app.get("/api/facebook/analytics", async (req, res) => {
       if (pagesData.error) {
         console.error('❌ Facebook API error for pages:', pagesData.error);
         pagesData.data = [];
+      }
+      
+      // Solution temporaire : extraire les Business Managers des comptes publicitaires
+      if (businessData.data.length === 0 && adAccountsData.data && adAccountsData.data.length > 0) {
+        console.log('🔍 Extracting Business Managers from ad accounts...');
+        const businessNames = new Set();
+        adAccountsData.data.forEach((account: any) => {
+          if (account.business_name && account.business_name.trim() !== '') {
+            businessNames.add(account.business_name);
+          }
+        });
+        
+        // Créer des Business Managers fictifs basés sur les noms trouvés
+        const extractedBusinesses = Array.from(businessNames).map((name, index) => ({
+          id: `extracted_${index + 1}`,
+          name: name,
+          timezone_name: 'UTC',
+          extracted: true
+        }));
+        
+        if (extractedBusinesses.length > 0) {
+          businessData.data = extractedBusinesses;
+          console.log('✅ Extracted Business Managers from ad accounts:', extractedBusinesses.length);
+        }
       }
 
       // 4. Récupérer les métriques réelles avec l'API Insights
@@ -1177,6 +1124,9 @@ app.get("/api/facebook/analytics", async (req, res) => {
         pages: ${pagesData.data?.length || 0} items
       }`);
       
+      console.log('🔍 Business Managers details:', JSON.stringify(businessData.data, null, 2));
+      console.log('🔍 Business Managers error:', businessData.error);
+      
       return res.json({ 
         message: "Analytics data retrieved successfully", 
         success: true, 
@@ -1197,6 +1147,280 @@ app.get("/api/facebook/analytics", async (req, res) => {
     res.status(500).json({ 
       message: "Internal server error", 
       error: error.message, 
+      success: false 
+    });
+  }
+});
+
+// 📊 Endpoint pour récupérer les insights d'un compte publicitaire
+app.get("/api/facebook/insights/:accountId", async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    const token = authHeader ? authHeader.replace('Bearer ', '') : null;
+    
+    if (!token) {
+      return res.status(401).json({ 
+        message: "No access token provided", 
+        success: false 
+      });
+    }
+
+    // Décoder le JWT pour obtenir l'userId
+    let userId = null;
+    try {
+      const payload = JSON.parse(Buffer.from(token.split('.')[1], 'base64').toString());
+      userId = payload.sub;
+      console.log('🔍 Getting insights for userId:', userId, 'accountId:', req.params.accountId);
+    } catch (error) {
+      console.error('❌ Error decoding JWT:', error);
+      return res.status(401).json({ message: "Invalid token", success: false });
+    }
+
+    // Récupérer le token Facebook de l'utilisateur
+    const { supabase } = await import("./supabaseClient.js");
+    const { data: tokenRow, error: tokenError } = await supabase
+      .from('access_tokens')
+      .select('token')
+      .eq('userId', userId)
+      .single() as any;
+
+    if (tokenError || !tokenRow) {
+      return res.status(404).json({ 
+        message: "No Facebook token found", 
+        success: false 
+      });
+    }
+
+    const accountId = req.params.accountId;
+    console.log('🔍 Fetching insights for account:', accountId);
+
+    // Récupérer les insights du compte publicitaire
+    const insightsUrl = `https://graph.facebook.com/v18.0/${accountId}/insights?access_token=${tokenRow.token}&fields=impressions,clicks,spend,reach,conversions,ctr,cpc,conversion_rate&date_preset=last_30d`;
+    
+    try {
+      const insightsResponse = await fetch(insightsUrl);
+      const insightsData = await insightsResponse.json();
+      
+      if (insightsData.error) {
+        console.error('❌ Facebook API error for insights:', insightsData.error);
+        
+        // Gestion spéciale pour la limite d'API
+        if (insightsData.error.code === 4) {
+          return res.status(429).json({
+            success: false,
+            message: "Facebook API rate limit reached. Please wait before making more requests.",
+            data: {},
+            retryAfter: 300 // 5 minutes
+          });
+        }
+        
+        return res.status(400).json({
+          success: false,
+          message: `Facebook API error: ${insightsData.error.message}`,
+          data: {}
+        });
+      }
+
+      // Traiter les données d'insights
+      const insights = insightsData.data && insightsData.data.length > 0 ? insightsData.data[0] : {};
+      
+      console.log('✅ Insights retrieved successfully:', insights);
+      
+      res.json({
+        success: true,
+        data: insights,
+        message: "Insights retrieved successfully"
+      });
+    } catch (error) {
+      console.error('❌ Error fetching insights:', error);
+      return res.status(500).json({
+        success: false,
+        message: "Failed to fetch insights",
+        data: {}
+      });
+    }
+  } catch (error) {
+    console.error('❌ Error in insights endpoint:', error);
+    res.status(500).json({ 
+      message: "Internal server error", 
+      success: false 
+    });
+  }
+});
+
+//  Endpoint pour récupérer les comptes publicitaires d'un Business Manager avec analytics
+app.get("/api/facebook/business/:businessId/adaccounts", async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    const token = authHeader ? authHeader.replace('Bearer ', '') : null;
+    
+    if (!token) {
+      return res.status(401).json({ 
+        message: "No access token provided", 
+        success: false 
+      });
+    }
+
+    // Décoder le JWT pour obtenir l'userId
+    let userId = null;
+    try {
+      const payload = JSON.parse(Buffer.from(token.split('.')[1], 'base64').toString());
+      userId = payload.sub;
+      console.log('🔍 Getting ad accounts for business:', req.params.businessId, 'userId:', userId);
+    } catch (error) {
+      console.error('❌ Error decoding JWT:', error);
+      return res.status(401).json({ message: "Invalid token", success: false });
+    }
+
+    // Récupérer le token Facebook de l'utilisateur
+    const { supabase } = await import("./supabaseClient.js");
+    const { data: tokenRow, error: tokenError } = await supabase
+      .from('access_tokens')
+      .select('token')
+      .eq('userId', userId)
+      .single() as any;
+
+    if (tokenError || !tokenRow) {
+      return res.status(404).json({ 
+        message: "No Facebook token found", 
+        success: false 
+      });
+    }
+
+    const businessId = req.params.businessId;
+    console.log('🔍 Fetching ad accounts for business:', businessId);
+
+    // Vérifier si c'est un Business Manager extrait
+    if (businessId.startsWith('extracted_')) {
+      console.log('🔍 Handling extracted business manager:', businessId);
+      
+      // Récupérer tous les comptes publicitaires et filtrer par business_name
+      try {
+        const allAdAccountsUrl = `https://graph.facebook.com/v18.0/me/adaccounts?access_token=${tokenRow.token}&fields=id,name,account_id,currency,account_status,amount_spent,balance,timezone_name,business_name,business_id,created_time`;
+        const allAdAccountsResponse = await fetch(allAdAccountsUrl);
+        const allAdAccountsData = await allAdAccountsResponse.json();
+        
+        if (allAdAccountsData.error) {
+          console.error('❌ Facebook API error for all ad accounts:', allAdAccountsData.error);
+          return res.status(400).json({
+            success: false,
+            message: `Facebook API error: ${allAdAccountsData.error.message}`,
+            data: []
+          });
+        }
+        
+        // Récupérer le nom du business manager extrait
+        const businessName = req.query.businessName as string;
+        console.log('🔍 Filtering by business name:', businessName);
+        
+        // Filtrer les comptes publicitaires par business_name
+        const filteredAccounts = allAdAccountsData.data.filter((account: any) => 
+          account.business_name && account.business_name.trim() === businessName
+        );
+        
+        console.log('✅ Found', filteredAccounts.length, 'ad accounts for business:', businessName);
+        
+        return res.json({
+          success: true,
+          data: filteredAccounts,
+          message: `Ad accounts for business ${businessName} retrieved successfully`
+        });
+        
+      } catch (error) {
+        console.error('❌ Error fetching ad accounts for extracted business:', error);
+        return res.status(500).json({
+          success: false,
+          message: "Error fetching ad accounts for extracted business",
+          data: []
+        });
+      }
+    }
+
+    try {
+      // Récupérer les comptes publicitaires du business manager (vrai Business Manager)
+      const adAccountsUrl = `https://graph.facebook.com/v18.0/${businessId}/adaccounts?access_token=${tokenRow.token}&fields=id,name,account_id,currency,account_status,amount_spent,balance,timezone_name,business_name,business_id,created_time`;
+      
+      const adAccountsResponse = await fetch(adAccountsUrl);
+      const adAccountsData = await adAccountsResponse.json();
+      
+      if (adAccountsData.error) {
+        console.error('❌ Facebook API error for ad accounts:', adAccountsData.error);
+        return res.status(400).json({
+          success: false,
+          message: `Facebook API error: ${adAccountsData.error.message}`,
+          data: []
+        });
+      }
+
+      const adAccounts = adAccountsData.data || [];
+      console.log('✅ Ad accounts retrieved:', adAccounts.length);
+      
+      // Debug des données financières brutes
+      console.log('🔍 Raw Facebook API data debug:', {
+        totalAccounts: adAccounts.length,
+        accountsWithSpend: adAccounts.filter(acc => acc.amount_spent > 0).length,
+        totalSpend: adAccounts.reduce((sum, acc) => sum + (acc.amount_spent || 0), 0),
+        totalBalance: adAccounts.reduce((sum, acc) => sum + (acc.balance || 0), 0),
+        sampleAccounts: adAccounts.slice(0, 3).map(acc => ({
+          name: acc.name,
+          amount_spent: acc.amount_spent,
+          balance: acc.balance,
+          currency: acc.currency,
+          account_status: acc.account_status
+        }))
+      });
+
+      // Pour chaque compte, récupérer les analytics (avec gestion d'erreur)
+      const accountsWithAnalytics = await Promise.all(
+        adAccounts.map(async (account: any) => {
+          try {
+            // Récupérer les insights du compte
+            const insightsUrl = `https://graph.facebook.com/v18.0/${account.account_id}/insights?access_token=${tokenRow.token}&fields=impressions,clicks,spend,reach,conversions,ctr,cpc,conversion_rate&date_preset=last_30d`;
+            
+            const insightsResponse = await fetch(insightsUrl);
+            const insightsData = await insightsResponse.json();
+            
+            let analytics = {};
+            if (!insightsData.error && insightsData.data && insightsData.data.length > 0) {
+              analytics = insightsData.data[0];
+            } else if (insightsData.error && insightsData.error.code === 4) {
+              // Rate limit - on retourne des données vides mais on continue
+              console.warn('⚠️ Rate limit for account:', account.account_id);
+            }
+
+            return {
+              ...account,
+              analytics
+            };
+          } catch (error) {
+            console.warn('⚠️ Error fetching analytics for account:', account.account_id, error);
+            return {
+              ...account,
+              analytics: {}
+            };
+          }
+        })
+      );
+
+      console.log('✅ Ad accounts with analytics retrieved successfully');
+      
+      res.json({
+        success: true,
+        data: accountsWithAnalytics,
+        message: "Ad accounts with analytics retrieved successfully"
+      });
+    } catch (error) {
+      console.error('❌ Error fetching ad accounts:', error);
+      return res.status(500).json({
+        success: false,
+        message: "Failed to fetch ad accounts",
+        data: []
+      });
+    }
+  } catch (error) {
+    console.error('❌ Error in business ad accounts endpoint:', error);
+    res.status(500).json({ 
+      message: "Internal server error", 
       success: false 
     });
   }

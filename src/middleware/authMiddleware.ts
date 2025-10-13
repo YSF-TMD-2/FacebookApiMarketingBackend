@@ -27,11 +27,27 @@ const protect = async (req: AuthRequest, res: Response, next: NextFunction) => {
         
         while (retryCount < maxRetries) {
             try {
+                // Vérifier d'abord si la session existe
+                const sessionResult = await supabase.auth.getSession();
+                if (sessionResult.error) {
+                    console.log("🔍 No active session found, trying to verify token directly...");
+                }
+                
                 const result = await supabase.auth.getUser(token);
                 user = result.data.user;
                 error = result.error;
                 
                 if (!error) break;
+                
+                // Gestion spéciale des erreurs de session
+                if (error.message?.includes('Auth session missing') || 
+                    error.message?.includes('AuthSessionMissingError')) {
+                    console.log("🔐 Auth session missing, token might be expired");
+                    return res.status(401).json({ 
+                        message: "Session expired. Please log in again.",
+                        code: "SESSION_EXPIRED"
+                    });
+                }
                 
                 // Si c'est une erreur réseau, retry
                 if (error.message?.includes('fetch failed') || error.message?.includes('ECONNRESET')) {
@@ -56,6 +72,16 @@ const protect = async (req: AuthRequest, res: Response, next: NextFunction) => {
 
         if (error || !user) {
             console.error("Supabase Auth error:", error);
+            
+            // Gestion spéciale des erreurs de session
+            if (error?.message?.includes('Auth session missing') || 
+                error?.message?.includes('AuthSessionMissingError')) {
+                return res.status(401).json({ 
+                    message: "Session expired. Please log in again.",
+                    code: "SESSION_EXPIRED"
+                });
+            }
+            
             return res.status(401).json({ 
                 message: "Invalid or expired token",
                 details: error?.message || "Authentication failed"

@@ -234,41 +234,66 @@ export async function saveAccessToken(req: Request, res: Response) {
 export async function getUserData(req: Request, res: Response) {
     try {
         const userId = req.user!.id;
+        console.log('🔍 Getting user data for userId:', userId);
 
         try {
             const tokenRow = await getFacebookToken(userId);
+            console.log('🔍 Token retrieved for user:', userId);
 
-            // Récupérer les données de base de Facebook
-            const userData = await fetchFbGraph(tokenRow.token, 'me?fields=id,name,email');
+            // Récupérer les données de base de Facebook avec gestion d'erreur
+            let userData = {};
+            try {
+                userData = await fetchFbGraph(tokenRow.token, 'me?fields=id,name,email');
+                console.log('✅ User data retrieved successfully');
+            } catch (error) {
+                console.error('❌ Error fetching user data:', error);
+                // Continuer avec des données vides
+            }
 
-            // Récupérer les comptes publicitaires
+            // Récupérer les comptes publicitaires avec gestion d'erreur
             let adAccounts = [];
             try {
                 const accountsData = await fetchFbGraph(tokenRow.token, 'me/adaccounts?fields=id,name,account_status,currency,amount_spent');
                 adAccounts = accountsData.data || [];
                 console.log('✅ Ad accounts retrieved:', adAccounts.length, 'accounts');
-                console.log('🔍 Ad accounts data:', JSON.stringify(adAccounts, null, 2));
             } catch (error) {
                 console.error('❌ Error fetching ad accounts:', error);
-                // Ne pas ignorer l'erreur, la logger
+                // Continuer avec une liste vide
             }
 
-            // Récupérer les pages
+            // Récupérer les pages avec gestion d'erreur
             let pages = [];
             try {
                 const pagesData = await fetchFbGraph(tokenRow.token, 'me/accounts?fields=id,name,category');
                 pages = pagesData.data || [];
+                console.log('✅ Pages retrieved:', pages.length, 'pages');
             } catch (error) {
-                // Ignore error for pages
+                console.error('❌ Error fetching pages:', error);
+                // Continuer avec une liste vide
             }
 
-            // Récupérer les business managers
+            // Récupérer les business managers avec gestion d'erreur
             let business = [];
             try {
                 const businessData = await fetchFbGraph(tokenRow.token, 'me/businesses?fields=id,name,timezone_name');
                 business = businessData.data || [];
+                console.log('✅ Business managers retrieved:', business.length, 'managers');
             } catch (error) {
-                // Ignore error for business
+                console.error('❌ Error fetching business managers:', error);
+                // Si erreur de limite de requêtes, essayer avec des champs de base
+                if (error.message && error.message.includes('Application request limit reached')) {
+                    console.log('⚠️ Rate limit reached, trying with basic fields...');
+                    try {
+                        const basicBusinessData = await fetchFbGraph(tokenRow.token, 'me/businesses?fields=id,name');
+                        business = basicBusinessData.data || [];
+                        console.log('✅ Business managers retrieved with basic fields:', business.length, 'managers');
+                    } catch (basicError) {
+                        console.error('❌ Error fetching business managers with basic fields:', basicError);
+                        business = [];
+                    }
+                } else {
+                    business = [];
+                }
             }
 
             const facebookData = {
@@ -279,12 +304,15 @@ export async function getUserData(req: Request, res: Response) {
                 tokenInfo: { valid: true }
             };
 
+            console.log('✅ Facebook data prepared successfully');
             await createLog(userId, "USER_DATA_RETRIEVED", { userData, adAccountsCount: adAccounts.length });
             return res.json({
                 success: true,
-                data: facebookData
+                data: facebookData,
+                message: "Facebook data retrieved successfully"
             });
         } catch (tokenError: any) {
+            console.error('❌ Token error:', tokenError);
             // Si pas de token, retourner une réponse vide au lieu d'une erreur
             if (tokenError.message === 'No access token found') {
                 return res.json({
@@ -297,10 +325,11 @@ export async function getUserData(req: Request, res: Response) {
         }
 
     } catch (error: any) {
-        console.error('Error getting user data:', error);
+        console.error('❌ Error getting user data:', error);
         return res.status(500).json({ 
             success: false,
-            message: error.message || "Server error" 
+            message: error.message || "Server error",
+            error: error.toString()
         });
     }
 }
