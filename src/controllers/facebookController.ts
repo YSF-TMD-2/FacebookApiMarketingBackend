@@ -769,15 +769,64 @@ export async function getBusinessAdAccounts(req: Request, res: Response) {
         const { businessId } = req.params;
         const tokenRow = await getFacebookToken(userId);
 
-        // Récupérer les comptes publicitaires du Business Manager
+        // Récupérer les comptes publicitaires du Business Manager avec métriques
         const accountsData = await fetchFbGraph(tokenRow.token, 
             `${businessId}/owned_ad_accounts?fields=id,name,account_status,currency,amount_spent,balance,timezone_name`
         );
 
-        await createLog(userId, "BUSINESS_ACCOUNTS_RETRIEVED", { businessId, accounts: accountsData.data });
+        // Pour chaque compte, récupérer les métriques de performance
+        const accountsWithMetrics = [];
+        for (const account of accountsData.data || []) {
+            try {
+                // Récupérer les insights du compte pour les 30 derniers jours
+                const insightsData = await fetchFbGraph(tokenRow.token, 
+                    `${account.id}/insights?fields=spend,impressions,clicks,reach,frequency,cpc,cpm,ctr,conversions&date_preset=last_30d`
+                );
+                
+                const insights = insightsData.data?.[0] || {};
+                
+                // Combiner les données du compte avec les métriques
+                accountsWithMetrics.push({
+                    ...account,
+                    spend: parseFloat(insights.spend || account.amount_spent || 0),
+                    impressions: parseInt(insights.impressions || 0),
+                    clicks: parseInt(insights.clicks || 0),
+                    reach: parseInt(insights.reach || 0),
+                    frequency: parseFloat(insights.frequency || 0),
+                    cpc: parseFloat(insights.cpc || 0),
+                    cpm: parseFloat(insights.cpm || 0),
+                    ctr: parseFloat(insights.ctr || 0),
+                    conversions: parseInt(insights.conversions || 0)
+                });
+                
+                console.log(`✅ Added metrics for account ${account.name}:`, {
+                    spend: insights.spend || account.amount_spent,
+                    clicks: insights.clicks,
+                    impressions: insights.impressions,
+                    ctr: insights.ctr
+                });
+            } catch (error) {
+                console.log(`⚠️ Error getting insights for account ${account.name}:`, error);
+                // Ajouter le compte sans métriques
+                accountsWithMetrics.push({
+                    ...account,
+                    spend: parseFloat(account.amount_spent || 0),
+                    impressions: 0,
+                    clicks: 0,
+                    reach: 0,
+                    frequency: 0,
+                    cpc: 0,
+                    cpm: 0,
+                    ctr: 0,
+                    conversions: 0
+                });
+            }
+        }
+
+        await createLog(userId, "BUSINESS_ACCOUNTS_RETRIEVED", { businessId, accounts: accountsWithMetrics });
         return res.json({ 
             success: true,
-            accounts: accountsData.data || [],
+            data: accountsWithMetrics,
             businessId: businessId
         });
 
