@@ -50,13 +50,37 @@ export async function getFacebookToken(userId: string): Promise<FacebookToken> {
     return tokenRow;
 }
 
-// Fonction utilitaire pour appeler l'API Facebook
-export async function fetchFbGraph(accessToken: string, endpoint: string = 'me') {
+// Fonction utilitaire pour appeler l'API Facebook avec support AbortController
+export async function fetchFbGraph(accessToken: string, endpoint: string = 'me', signal?: AbortSignal, userId?: string) {
     try {
         console.log('🔍 fetchFbGraph called with:', {
             endpoint,
-            accessToken: accessToken ? accessToken.substring(0, 10) + '...' : 'undefined'
+            accessToken: accessToken ? accessToken.substring(0, 10) + '...' : 'undefined',
+            hasSignal: !!signal,
+            userId: userId || 'unknown'
         });
+
+        // Vérifier si la requête a été annulée
+        if (signal?.aborted) {
+            console.log('🛑 Request aborted before execution');
+            throw new Error('Request aborted');
+        }
+
+        // Créer un AbortController local si pas de signal fourni
+        let localController: AbortController | null = null;
+        let finalSignal = signal;
+
+        if (!signal && userId) {
+            localController = new AbortController();
+            finalSignal = localController.signal;
+            
+            // Enregistrer le controller dans la map des requêtes actives
+            const userRequests = activeRequests.get(userId) || [];
+            userRequests.push(localController);
+            activeRequests.set(userId, userRequests);
+            
+            console.log('📝 Registered request for user:', userId, 'Total active:', userRequests.length);
+        }
 
         const response = await axios.get(
             `https://graph.facebook.com/v18.0/${endpoint}`,
@@ -64,13 +88,36 @@ export async function fetchFbGraph(accessToken: string, endpoint: string = 'me')
                 headers: {
                     'Authorization': `Bearer ${accessToken}`,
                     'Content-Type': 'application/json'
-                }
+                },
+                signal: finalSignal, // Passer le signal d'annulation à axios
+                timeout: 30000 // Timeout de 30 secondes
             }
         );
+
+        // Nettoyer le controller local après succès
+        if (localController && userId) {
+            const userRequests = activeRequests.get(userId) || [];
+            const filteredRequests = userRequests.filter(controller => controller !== localController);
+            activeRequests.set(userId, filteredRequests);
+            console.log('✅ Request completed and cleaned up for user:', userId);
+        }
 
         console.log('✅ fetchFbGraph success:', response.data);
         return response.data;
     } catch (error: any) {
+        // Nettoyer le controller local en cas d'erreur
+        if (userId) {
+            const userRequests = activeRequests.get(userId) || [];
+            const filteredRequests = userRequests.filter(controller => !controller.signal.aborted);
+            activeRequests.set(userId, filteredRequests);
+        }
+
+        // Vérifier si c'est une annulation
+        if (error.name === 'AbortError' || error.message === 'Request aborted') {
+            console.log('🛑 Request aborted during execution');
+            throw new Error('Request aborted');
+        }
+        
         console.error('❌ fetchFbGraph error:', {
             message: error.message,
             status: error.response?.status,
@@ -769,18 +816,34 @@ export async function getBusinessAdAccounts(req: Request, res: Response) {
         const { businessId } = req.params;
         const tokenRow = await getFacebookToken(userId);
 
+        // Créer un AbortController pour cette requête
+        const abortController = new AbortController();
+        
+        // Stocker le controller dans la requête pour pouvoir l'annuler
+        (req as any).abortController = abortController;
+
         // Récupérer les comptes publicitaires du Business Manager avec métriques
         const accountsData = await fetchFbGraph(tokenRow.token, 
-            `${businessId}/owned_ad_accounts?fields=id,name,account_status,currency,amount_spent,balance,timezone_name`
+            `${businessId}/owned_ad_accounts?fields=id,name,account_status,currency,amount_spent,balance,timezone_name`,
+            abortController.signal,
+            userId
         );
 
         // Pour chaque compte, récupérer les métriques de performance
         const accountsWithMetrics = [];
         for (const account of accountsData.data || []) {
+            // Vérifier si la requête a été annulée
+            if (abortController.signal.aborted) {
+                console.log('🛑 Request aborted during account processing');
+                throw new Error('Request aborted');
+            }
+            
             try {
                 // Récupérer les insights du compte pour les 30 derniers jours
                 const insightsData = await fetchFbGraph(tokenRow.token, 
-                    `${account.id}/insights?fields=spend,impressions,clicks,reach,frequency,cpc,cpm,ctr,conversions&date_preset=last_30d`
+                    `${account.id}/insights?fields=spend,impressions,clicks,reach,frequency,cpc,cpm,ctr,conversions&date_preset=last_30d`,
+                    abortController.signal,
+                    userId
                 );
                 
                 const insights = insightsData.data?.[0] || {};
@@ -1240,5 +1303,153 @@ export async function clearFacebookCache(req: Request, res: Response) {
     } catch (error: any) {
         console.error('Error clearing cache:', error);
         return res.status(500).json({ message: error.message || "Server error" });
+    }
+}
+
+// Map pour stocker les AbortControllers actifs par utilisateur
+const activeRequests = new Map<string, AbortController[]>();
+
+// Nettoyer les requêtes expirées toutes les 5 minutes
+setInterval(() => {
+    const now = Date.now();
+    for (const [userId, controllers] of activeRequests.entries()) {
+        const validControllers = controllers.filter(controller => !controller.signal.aborted);
+        if (validControllers.length !== controllers.length) {
+            activeRequests.set(userId, validControllers);
+            console.log('🧹 Cleaned up expired requests for user:', userId);
+        }
+    }
+}, 5 * 60 * 1000); // 5 minutes
+
+// POST /api/facebook/abort-requests - Annuler les requêtes en cours
+export async function abortFacebookRequests(req: Request, res: Response) {
+    try {
+        const userId = req.user!.id;
+        
+        console.log('🛑 Aborting Facebook requests for user:', userId);
+        
+        // Récupérer les AbortControllers actifs pour cet utilisateur
+        const userRequests = activeRequests.get(userId) || [];
+        
+        // Annuler toutes les requêtes actives
+        userRequests.forEach(controller => {
+            if (!controller.signal.aborted) {
+                console.log('🛑 Aborting active request');
+                controller.abort();
+            }
+        });
+        
+        // Nettoyer la liste des requêtes
+        activeRequests.set(userId, []);
+        
+        await createLog(userId, "REQUESTS_ABORTED", { 
+            abortedCount: userRequests.length 
+        });
+        
+        return res.json({ 
+            success: true,
+            message: "Facebook requests aborted successfully",
+            abortedCount: userRequests.length
+        });
+
+    } catch (error: any) {
+        console.error('Error aborting requests:', error);
+        return res.status(500).json({ 
+            success: false,
+            message: error.message || "Server error" 
+        });
+    }
+}
+
+// OAuth callback handler
+export async function handleOAuthCallback(req: Request, res: Response) {
+    try {
+        const { code, redirectUri } = req.body;
+        
+        // Vérifier que les variables d'environnement sont définies
+        if (!process.env.FB_CLIENT_ID) {
+            console.error('❌ FB_CLIENT_ID not set in environment variables');
+            return res.status(500).json({
+                success: false,
+                message: 'Server configuration error: FB_CLIENT_ID not set'
+            });
+        }
+        
+        if (!process.env.FB_APP_SECRET) {
+            console.error('❌ FB_APP_SECRET not set in environment variables');
+            return res.status(500).json({
+                success: false,
+                message: 'Server configuration error: FB_APP_SECRET not set'
+            });
+        }
+        
+        if (!code) {
+            return res.status(400).json({
+                success: false,
+                message: 'Authorization code is required'
+            });
+        }
+
+        console.log('🔍 OAuth callback received:', { code: code.substring(0, 10) + '...', redirectUri });
+
+        // Debug: Vérifier les variables d'environnement
+        console.log('🔍 Environment variables check:', {
+            FB_CLIENT_ID: process.env.FB_CLIENT_ID,
+            FB_APP_SECRET: process.env.FB_APP_SECRET ? '***' + process.env.FB_APP_SECRET.slice(-4) : 'NOT SET',
+            NODE_ENV: process.env.NODE_ENV
+        });
+
+        // Exchange code for access token
+        const tokenResponse = await axios.get(`https://graph.facebook.com/v18.0/oauth/access_token`, {
+            params: {
+                client_id: process.env.FB_CLIENT_ID,
+                client_secret: process.env.FB_APP_SECRET,
+                redirect_uri: redirectUri,
+                code: code
+            }
+        });
+
+        const { access_token, expires_in } = tokenResponse.data;
+        
+        if (!access_token) {
+            return res.status(400).json({
+                success: false,
+                message: 'Failed to get access token from Facebook'
+            });
+        }
+
+        console.log('✅ Access token obtained:', access_token.substring(0, 10) + '...');
+
+        // Get user info from Facebook
+        const userResponse = await axios.get(`https://graph.facebook.com/v18.0/me`, {
+            params: {
+                access_token: access_token,
+                fields: 'id,name,email'
+            }
+        });
+
+        const userInfo = userResponse.data;
+        console.log('✅ User info obtained:', userInfo);
+
+        // Store token in database (you'll need to implement this based on your auth system)
+        // For now, we'll just return success
+        return res.json({
+            success: true,
+            message: 'Facebook account connected successfully',
+            data: {
+                access_token: access_token,
+                user: userInfo,
+                expires_in: expires_in
+            }
+        });
+
+    } catch (error: any) {
+        console.error('❌ OAuth callback error:', error.response?.data || error.message);
+        
+        return res.status(500).json({
+            success: false,
+            message: 'An error occurred during authentication',
+            error: error.response?.data || error.message
+        });
     }
 }

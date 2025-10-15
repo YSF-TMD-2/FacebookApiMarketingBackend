@@ -6,6 +6,11 @@ import facebookRoutes from "./routes/facebookRoutes.js";
 
 dotenv.config();
 
+// Vérifier les variables d'environnement au démarrage
+console.log('🔍 Environment variables check:');
+console.log('  FB_CLIENT_ID:', process.env.FB_CLIENT_ID ? 'SET' : 'NOT SET');
+console.log('  FB_APP_SECRET:', process.env.FB_APP_SECRET ? 'SET' : 'NOT SET');
+console.log('  NODE_ENV:', process.env.NODE_ENV || 'development');
 
 const app = express();
 

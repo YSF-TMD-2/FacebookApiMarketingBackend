@@ -1,10 +1,13 @@
 import { Router } from "express";
 import protect from "../middleware/authMiddleware.js";
-import { saveAccessToken, getUserData, getFbData, getAdAccounts, getAccountCampaigns, getCampaignAdsets, getAdsetAds, updateAdStatus, disconnectFacebook, clearFacebookCache, getFacebookToken, fetchFbGraph, getCompleteAnalytics, getBusinessAdAccounts, getAccountAnalytics, facebookDiagnostic, testFacebookSimple, testAdAccounts } from "../controllers/facebookController.js";
+import { saveAccessToken, getUserData, getFbData, getAdAccounts, getAccountCampaigns, getCampaignAdsets, getAdsetAds, updateAdStatus, disconnectFacebook, clearFacebookCache, abortFacebookRequests, getFacebookToken, fetchFbGraph, getCompleteAnalytics, getBusinessAdAccounts, getAccountAnalytics, facebookDiagnostic, testFacebookSimple, testAdAccounts, handleOAuthCallback } from "../controllers/facebookController.js";
 import { Request, Response } from "../types/express.js";
 
 const router = Router();
 // store access token (sent by frontend), fetch FB data and cache
+
+// OAuth callback route
+router.post('/oauth/callback', handleOAuthCallback);
 
 router.post('/token' , saveAccessToken)
 
@@ -89,6 +92,9 @@ router.delete("/disconnect", protect, disconnectFacebook);
 
 // clear Facebook cache
 router.post("/clear-cache", protect, clearFacebookCache);
+
+// abort Facebook requests
+router.post("/abort-requests", protect, abortFacebookRequests);
 
 // Analytics endpoints
 router.get("/analytics", protect, getCompleteAnalytics);
