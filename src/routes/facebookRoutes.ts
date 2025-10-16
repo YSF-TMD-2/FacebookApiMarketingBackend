@@ -1,6 +1,6 @@
 import { Router } from "express";
 import protect from "../middleware/authMiddleware.js";
-import { saveAccessToken, getUserData, getFbData, getAdAccounts, getAccountCampaigns, getCampaignAdsets, getAdsetAds, updateAdStatus, disconnectFacebook, clearFacebookCache, abortFacebookRequests, getFacebookToken, fetchFbGraph, getCompleteAnalytics, getBusinessAdAccounts, getAccountAnalytics, facebookDiagnostic, testFacebookSimple, testAdAccounts, handleOAuthCallback } from "../controllers/facebookController.js";
+import { saveAccessToken, getUserData, getFbData, getAdAccounts, getAccountCampaigns, getAccountInsights, getCampaignAdsets, getAdsetAds, updateAdStatus, disconnectFacebook, clearFacebookCache, abortFacebookRequests, getFacebookToken, fetchFbGraph, getCompleteAnalytics, getBusinessAdAccounts, getAccountAnalytics, facebookDiagnostic, testFacebookSimple, testAdAccounts, handleOAuthCallback } from "../controllers/facebookController.js";
 import { Request, Response } from "../types/express.js";
 
 const router = Router();
@@ -22,6 +22,12 @@ router.get("/accounts", protect, getAdAccounts);
 
 // get campaigns for a specific ad account
 router.get("/campaigns/:accountId", protect, getAccountCampaigns);
+
+// get campaigns for a specific ad account (new format)
+router.get("/account/:accountId/campaigns", protect, getAccountCampaigns);
+
+// get ads insights for a specific ad account
+router.get("/account/:accountId/insights", protect, getAccountInsights);
 
 
 // get adsets for a specific campaign
