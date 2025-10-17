@@ -29,6 +29,35 @@ router.get("/account/:accountId/campaigns", protect, getAccountCampaigns);
 // get ads insights for a specific ad account
 router.get("/account/:accountId/insights", protect, getAccountInsights);
 
+// get insights for a specific campaign
+router.get("/campaign/:campaignId/insights", protect, async (req: Request, res: Response) => {
+    try {
+        const userId = req.user!.id;
+        const { campaignId } = req.params;
+        const { dateRange = 'last_30d' } = req.query;
+        
+        const tokenRow = await getFacebookToken(userId);
+        
+        // Récupérer les insights de la campagne
+        const endpoint = `${campaignId}/insights?fields=spend,impressions,clicks,conversions,ctr,cpc,cpm&date_preset=${dateRange}`;
+        const insights = await fetchFbGraph(tokenRow.token, endpoint);
+        
+        return res.json({
+            success: true,
+            data: insights.data || [],
+            message: "Campaign insights retrieved successfully"
+        });
+        
+    } catch (error: any) {
+        console.error('Get campaign insights failed:', error);
+        return res.status(500).json({
+            success: false,
+            message: error.message || "Server error",
+            details: error.response?.data || null
+        });
+    }
+});
+
 
 // get adsets for a specific campaign
 router.get("/adsets/:campaignId", protect, getCampaignAdsets);

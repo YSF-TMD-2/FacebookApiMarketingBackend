@@ -549,7 +549,7 @@ export async function getAccountInsights(req: Request, res: Response) {
     try {
         const userId = req.user!.id;
         const { accountId } = req.params;
-        const { dateRange = 'last_30d', fields = 'spend,impressions,clicks,ctr,cpc,cpm,actions' } = req.query;
+        const { dateRange = 'last_30d', fields = 'spend,impressions,clicks,ctr,cpc,cpm' } = req.query;
 
         // Vérifier le format de l'accountId
         if (!accountId || accountId.length < 5) {
