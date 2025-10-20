@@ -947,7 +947,7 @@ app.get("/api/facebook/analytics", async (req, res) => {
     try {
       // 1. Récupérer les informations Business Manager (avec gestion de la limite)
       console.log('🔍 Fetching Business Manager data...');
-      let businessData = { data: [] };
+      let businessData: { data: any[]; error?: { code?: number; message?: string } } = { data: [] };
       try {
         // Vérifier d'abord si on a déjà atteint la limite
         const businessResponse = await fetch(`https://graph.facebook.com/v18.0/me/businesses?access_token=${tokenRow.token}&fields=id,name`);
@@ -974,7 +974,7 @@ app.get("/api/facebook/analytics", async (req, res) => {
       console.log('🔍 Fetching ad accounts with metrics and Business Manager...');
       
       // Essayer d'abord avec des champs de base
-      let adAccountsData;
+      let adAccountsData: { data: any[]; error?: { code?: number; message?: string } } = { data: [] };
       try {
         const adAccountsResponse = await fetch(`https://graph.facebook.com/v18.0/me/adaccounts?access_token=${tokenRow.token}&fields=id,name,account_id,currency,account_status,amount_spent`);
         adAccountsData = await adAccountsResponse.json();
@@ -1003,7 +1003,7 @@ app.get("/api/facebook/analytics", async (req, res) => {
 
       // 3. Récupérer les pages
       console.log('🔍 Fetching pages...');
-      let pagesData;
+      let pagesData: { data: any[]; error?: { code?: number; message?: string } } = { data: [] };
       try {
         // Essayer d'abord avec des champs de base
         const pagesResponse = await fetch(`https://graph.facebook.com/v18.0/me/accounts?access_token=${tokenRow.token}&fields=id,name`);
@@ -1130,7 +1130,7 @@ app.get("/api/facebook/analytics", async (req, res) => {
       }`);
       
       console.log('🔍 Business Managers details:', JSON.stringify(businessData.data, null, 2));
-      console.log('🔍 Business Managers error:', businessData.error);
+      console.log('🔍 Business Managers error:', (businessData as any).error);
       
       return res.json({ 
         message: "Analytics data retrieved successfully", 
@@ -1385,7 +1385,7 @@ app.get("/api/facebook/business/:businessId/adaccounts", async (req, res) => {
             const insightsResponse = await fetch(insightsUrl);
             const insightsData = await insightsResponse.json();
             
-            let analytics = {};
+            let analytics: any = {};
             if (!insightsData.error && insightsData.data && insightsData.data.length > 0) {
               analytics = insightsData.data[0];
             } else if (insightsData.error && insightsData.error.code === 4) {

@@ -141,8 +141,9 @@ export async function saveAccessToken(req: Request, res: Response) {
         
         if (!userId) {
             // Essayer de décoder le token JWT depuis les headers
-            const authHeader = req.headers.authorization;
-            if (authHeader && authHeader.startsWith('Bearer ')) {
+            const rawAuth = req.headers?.authorization;
+            const authHeader = Array.isArray(rawAuth) ? rawAuth[0] : rawAuth;
+            if (authHeader && typeof authHeader === 'string' && authHeader.startsWith('Bearer ')) {
                 try {
                     const token = authHeader.replace('Bearer ', '');
                     // Décoder le JWT (partie payload)
@@ -239,7 +240,7 @@ export async function saveAccessToken(req: Request, res: Response) {
             if (existingTokenByValue) {
                 console.log('🔍 Token already exists for another user, updating userId');
                 // Mettre à jour l'userId du token existant
-                const { error: updateUserIdError } = await supabase
+                const { error: updateUserIdError } = await (supabase as any)
                     .from('access_tokens')
                     .update({ userId: userId })
                     .eq('token', accessToken);
