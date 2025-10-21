@@ -507,10 +507,21 @@ export async function getAccountCampaigns(req: Request, res: Response) {
 
         // Filtrer par statut si fourni
         if (status) {
-            const statusArray = Array.isArray(status) ? status : [status];
+            // Gérer le cas où status est une chaîne séparée par des virgules
+            let statusArray = [];
+            if (typeof status === 'string') {
+                statusArray = status.split(',').map(s => s.trim());
+            } else if (Array.isArray(status)) {
+                statusArray = status;
+            } else {
+                statusArray = [status];
+            }
+            
+            console.log(`🔍 Filtering campaigns by status:`, statusArray);
             campaignsData = campaignsData.filter(campaign => 
                 statusArray.includes(campaign.effective_status)
             );
+            console.log(`📊 After status filter: ${campaignsData.length} campaigns`);
         }
 
         console.log(`📊 Final result: ${campaignsData.length} campaigns for account ${accountId}`);
@@ -550,7 +561,13 @@ export async function getAccountInsights(req: Request, res: Response) {
     try {
         const userId = req.user!.id;
         const { accountId } = req.params;
-        const { dateRange = 'last_30d', fields = 'spend,impressions,clicks,ctr,cpc,cpm' } = req.query;
+        const { 
+            dateRange, 
+            date_preset, 
+            time_range, 
+            fields = 'spend,impressions,clicks,ctr,cpc,cpm,actions',
+            refresh 
+        } = req.query;
 
         // Vérifier le format de l'accountId
         if (!accountId || accountId.length < 5) {
@@ -566,12 +583,34 @@ export async function getAccountInsights(req: Request, res: Response) {
         // Construire l'endpoint pour les insights
         let endpoint = `${accountId}/insights?fields=${fields}&level=account`;
         
-        // Ajouter la plage de dates
-        if (dateRange === 'last_30d') {
-            const endDate = new Date();
-            const startDate = new Date();
-            startDate.setDate(startDate.getDate() - 30);
-            endpoint += `&time_range[since]=${startDate.toISOString().split('T')[0]}&time_range[until]=${endDate.toISOString().split('T')[0]}`;
+        // Gérer les différents formats de dates
+        if (time_range && typeof time_range === 'object') {
+            // Gérer time_range[since] et time_range[until]
+            const since = (time_range as any).since;
+            const until = (time_range as any).until;
+            if (since && until) {
+                endpoint += `&time_range[since]=${since}&time_range[until]=${until}`;
+                console.log(`🔍 Using time_range: ${since} to ${until}`);
+            }
+        } else if (date_preset) {
+            // Utiliser date_preset
+            endpoint += `&date_preset=${date_preset}`;
+            console.log(`🔍 Using date_preset: ${date_preset}`);
+        } else if (dateRange) {
+            // Fallback pour dateRange
+            if (dateRange === 'last_30d') {
+                const endDate = new Date();
+                const startDate = new Date();
+                startDate.setDate(startDate.getDate() - 30);
+                endpoint += `&time_range[since]=${startDate.toISOString().split('T')[0]}&time_range[until]=${endDate.toISOString().split('T')[0]}`;
+            } else {
+                endpoint += `&date_preset=${dateRange}`;
+            }
+            console.log(`🔍 Using dateRange: ${dateRange}`);
+        } else {
+            // Par défaut, utiliser last_30d
+            endpoint += `&date_preset=last_30d`;
+            console.log(`🔍 Using default date_preset: last_30d`);
         }
 
         console.log(`🔍 Fetching insights for account ${accountId} with endpoint: ${endpoint}`);
@@ -579,12 +618,12 @@ export async function getAccountInsights(req: Request, res: Response) {
 
         // Retourner les insights avec le format attendu
         const insightsData = insights.data?.[0] || {
-            spend: 0,
-            impressions: 0,
-            clicks: 0,
-            ctr: 0,
-            cpc: 0,
-            cpm: 0,
+            spend: '0',
+            impressions: '0',
+            clicks: '0',
+            ctr: '0',
+            cpc: '0',
+            cpm: '0',
             actions: []
         };
 

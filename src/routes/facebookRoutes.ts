@@ -128,6 +128,9 @@ router.delete("/disconnect", protect, disconnectFacebook);
 // clear Facebook cache
 router.post("/clear-cache", protect, clearFacebookCache);
 
+// clear Facebook cache for specific account
+router.post("/account/:accountId/clear-cache", protect, clearFacebookCache);
+
 // abort Facebook requests
 router.post("/abort-requests", protect, abortFacebookRequests);
 
