@@ -71,19 +71,66 @@ router.get("/adset/:adsetId", protect, async (req: Request, res: Response) => {
         const userId = req.user!.id;
         const { adsetId } = req.params;
         
+        console.log('🔍 getAdsetDetails called with adsetId:', adsetId);
+        
         const tokenRow = await getFacebookToken(userId);
 
-        // Récupérer les détails de l'adset
-        const endpoint = `${adsetId}?fields=id,name,status,created_time,updated_time,daily_budget,lifetime_budget,start_time,end_time`;
+        // Récupérer les détails de base de l'adset
+        const endpoint = `${adsetId}?fields=id,name,status,created_time,updated_time,daily_budget,lifetime_budget,start_time,end_time,optimization_goal,bid_strategy,billing_event`;
         const adsetDetails = await fetchFbGraph(tokenRow.token, endpoint);
+        console.log('🔍 Adset basic details:', adsetDetails);
+
+        // Récupérer les métriques de l'adset
+        let adsetMetrics = {};
+        try {
+            const insightsEndpoint = `${adsetId}/insights?fields=spend,impressions,clicks,reach,frequency,cpc,cpm,ctr,conversions&date_preset=last_30d`;
+            const insights = await fetchFbGraph(tokenRow.token, insightsEndpoint);
+            const insightData = insights.data?.[0] || {};
+            
+            adsetMetrics = {
+                spend: parseFloat(insightData.spend || 0),
+                impressions: parseInt(insightData.impressions || 0),
+                clicks: parseInt(insightData.clicks || 0),
+                reach: parseInt(insightData.reach || 0),
+                conversions: parseInt(insightData.conversions || 0),
+                ctr: parseFloat(insightData.ctr || 0),
+                cpc: parseFloat(insightData.cpc || 0),
+                cpm: parseFloat(insightData.cpm || 0),
+                frequency: parseFloat(insightData.frequency || 0),
+                conversion_rate: insightData.clicks > 0 ? (insightData.conversions / insightData.clicks) * 100 : 0
+            };
+            console.log('🔍 Adset metrics:', adsetMetrics);
+        } catch (insightsError) {
+            console.log('⚠️ Error fetching adset insights:', insightsError.message);
+            // Utiliser des valeurs par défaut en cas d'erreur
+            adsetMetrics = {
+                spend: 0,
+                impressions: 0,
+                clicks: 0,
+                reach: 0,
+                conversions: 0,
+                ctr: 0,
+                cpc: 0,
+                cpm: 0,
+                frequency: 0,
+                conversion_rate: 0
+            };
+        }
+
+        // Combiner les détails de base avec les métriques
+        const combinedData = {
+            ...adsetDetails,
+            ...adsetMetrics
+        };
 
         return res.json({ 
             success: true,
-            data: adsetDetails,
+            data: combinedData,
             message: "Adset details retrieved successfully"
         });
 
     } catch (error: any) {
+        console.error('❌ Error in getAdsetDetails:', error);
         return res.status(500).json({ 
             success: false,
             message: error.message || "Server error",
@@ -97,12 +144,18 @@ router.get("/ad/:adId", protect, async (req: Request, res: Response) => {
     try {
         const userId = req.user!.id;
         const { adId } = req.params;
+        console.log("this is ad details data request", req.body);
+        
+        console.log(` Fetching ad details for: ${adId}`);
         
         const tokenRow = await getFacebookToken(userId);
 
-        // Récupérer les détails de l'ad avec les insights
-        const endpoint = `${adId}?fields=id,name,status,created_time,updated_time,creative,adset_id,campaign_id,insights{impressions,clicks,spend,reach,ctr,cpc,conversions}`;
+        // Récupérer les détails de l'ad avec les insights et les détails créatifs complets
+        const endpoint = `${adId}?fields=id,name,status,created_time,updated_time,adset_id,campaign_id,creative{id,name,title,body,call_to_action_type,image_url,video_id,link_url,object_story_spec,object_type},insights{impressions,clicks,spend,reach,ctr,cpc,conversions}`;
+        console.log(`Facebook API endpoint: ${endpoint}`);
+        
         const adDetails = await fetchFbGraph(tokenRow.token, endpoint);
+        console.log(` Ad details retrieved:`, JSON.stringify(adDetails, null, 2));
 
         return res.json({ 
             success: true,
@@ -111,6 +164,7 @@ router.get("/ad/:adId", protect, async (req: Request, res: Response) => {
         });
 
     } catch (error: any) {
+        console.error('❌ Error fetching ad details:', error);
         return res.status(500).json({ 
             success: false,
             message: error.message || "Server error",
@@ -143,6 +197,71 @@ router.get("/account/:accountId/analytics", protect, getAccountAnalytics);
 router.get("/test-simple", protect, testFacebookSimple);
 router.get("/test-accounts", protect, testAdAccounts);
 router.get("/diagnostic", protect, facebookDiagnostic);
+
+// Proxy pour les images Facebook
+router.get("/image-proxy", protect, async (req: Request, res: Response) => {
+    try {
+        const { url } = req.query;
+        
+        if (!url) {
+            return res.status(400).json({
+                success: false,
+                message: "URL parameter is required"
+            });
+        }
+
+        console.log('🔍 Proxying image URL:', url);
+
+        const tokenRow = await getFacebookToken(req.user!.id);
+        
+        // Faire la requête à Facebook avec le token et des headers plus complets
+        const response = await fetch(url as string, {
+            method: 'GET',
+            headers: {
+                'Authorization': `Bearer ${tokenRow.token}`,
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Accept-Encoding': 'gzip, deflate, br',
+                'Referer': 'https://www.facebook.com/',
+                'Sec-Fetch-Dest': 'image',
+                'Sec-Fetch-Mode': 'no-cors',
+                'Sec-Fetch-Site': 'same-origin'
+            },
+            redirect: 'follow'
+        });
+
+        console.log('🔍 Facebook response status:', response.status);
+
+        if (!response.ok) {
+            console.error('❌ Facebook API error:', response.status, response.statusText);
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+
+        const imageBuffer = await response.arrayBuffer();
+        console.log('✅ Image buffer size:', imageBuffer.byteLength);
+        
+        // Définir les headers pour l'image
+        res.set({
+            'Content-Type': response.headers.get('content-type') || 'image/jpeg',
+            'Content-Length': imageBuffer.byteLength.toString(),
+            'Cache-Control': 'public, max-age=86400', // 24 heures
+            'Access-Control-Allow-Origin': '*',
+            'Access-Control-Allow-Methods': 'GET',
+            'Access-Control-Allow-Headers': 'Content-Type, Authorization'
+        });
+        
+        res.send(Buffer.from(imageBuffer));
+        
+    } catch (error: any) {
+        console.error('❌ Error proxying image:', error);
+        res.status(500).json({
+            success: false,
+            message: "Failed to load image",
+            error: error.message
+        });
+    }
+});
 
 // Test endpoint pour vérifier l'authentification
 router.get("/test-auth", protect, (req: Request, res: Response) => {

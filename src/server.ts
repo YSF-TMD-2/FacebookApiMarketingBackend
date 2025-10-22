@@ -3,6 +3,10 @@ import dotenv from "dotenv";
 import cors from "cors";
 import authRoutes from "./routes/authRoutes.js";
 import facebookRoutes from "./routes/facebookRoutes.js";
+import scheduleRoutes from "./routes/scheduleRoutes.js";
+import stopLossRoutes from "./routes/stopLossRoutes.js";
+import { startScheduleService } from "./controllers/scheduleController.js";
+import { startStopLossService } from "./controllers/stopLossController.js";
 
 dotenv.config();
 
@@ -56,7 +60,7 @@ app.use(
       if (isAllowedUrl(origin)) {
         console.log('✅ CORS allowed for URL:', origin);
         callback(null, true);
-      } else {
+  } else {
         console.log('❌ CORS blocked origin:', origin);
         callback(new Error('Not allowed by CORS policy'), false);
       }
@@ -1101,13 +1105,13 @@ app.get("/api/facebook/analytics", async (req, res) => {
         adAccounts: adAccountsData.data || [],
         pages: pagesData.data || [],
         metrics: {
-          totalCampaigns,
+            totalCampaigns,
           totalAdsets,
           totalAds,
           totalSpend: Math.round(totalSpend * 100) / 100,
           totalImpressions,
           totalClicks,
-          totalConversions,
+            totalConversions,
           totalAdAccounts: adAccountsData.data?.length || 0,
           totalPages: pagesData.data?.length || 0,
           totalBusinesses: businessData.data?.length || 0
@@ -1734,7 +1738,7 @@ app.get("/api/facebook/detailed-adaccounts", async (req, res) => {
       adAccounts.forEach((account: any) => {
         if (account.business_id && businessMap.has(account.business_id)) {
           businessMap.get(account.business_id).adAccounts.push(account);
-        } else {
+            } else {
           // Si pas de business_id, créer un groupe "Non assigné"
           if (!businessMap.has('unassigned')) {
             businessMap.set('unassigned', {
@@ -1839,11 +1843,67 @@ app.get("/api/facebook/campaigns/:accountId", async (req, res) => {
       }
 
       console.log('✅ Campaigns fetched successfully:', campaignsData.data?.length || 0, 'campaigns');
-      console.log('🔍 Campaigns data:', JSON.stringify(campaignsData.data, null, 2));
+
+      // Récupérer les métriques pour chaque campagne
+      const campaignsWithMetrics = [];
+      for (const campaign of campaignsData.data || []) {
+        try {
+          // Récupérer les insights (métriques) pour chaque campagne
+          const insightsUrl = `https://graph.facebook.com/v18.0/${campaign.id}/insights?access_token=${tokenRow.token}&fields=spend,impressions,clicks,reach,frequency,cpc,cpm,ctr,conversions&date_preset=last_30d`;
+          const insightsResponse = await fetch(insightsUrl);
+          const insightsData = await insightsResponse.json();
+          
+          const insights = insightsData.data?.[0] || {};
+          
+          campaignsWithMetrics.push({
+            ...campaign,
+            account_id: accountId,
+            // Métriques principales
+            spend: parseFloat(insights.spend || 0),
+            impressions: parseInt(insights.impressions || 0),
+            clicks: parseInt(insights.clicks || 0),
+            reach: parseInt(insights.reach || 0),
+            conversions: parseInt(insights.conversions || 0),
+            // Métriques calculées
+            ctr: parseFloat(insights.ctr || 0),
+            cpc: parseFloat(insights.cpc || 0),
+            cpm: parseFloat(insights.cpm || 0),
+            frequency: parseFloat(insights.frequency || 0),
+            conversion_rate: insights.clicks > 0 ? (insights.conversions / insights.clicks) * 100 : 0
+          });
+          
+          console.log(`📊 Metrics for campaign ${campaign.name}:`, {
+            spend: insights.spend || 0,
+            impressions: insights.impressions || 0,
+            clicks: insights.clicks || 0,
+            ctr: insights.ctr || 0
+          });
+          
+        } catch (insightsError) {
+          console.log('⚠️ Error getting insights for campaign:', campaign.id, insightsError.message);
+          // Ajouter la campagne sans métriques
+          campaignsWithMetrics.push({
+            ...campaign,
+            account_id: accountId,
+            spend: 0,
+            impressions: 0,
+            clicks: 0,
+            reach: 0,
+            conversions: 0,
+            ctr: 0,
+            cpc: 0,
+            cpm: 0,
+            frequency: 0,
+            conversion_rate: 0
+          });
+        }
+      }
+
+      console.log('🔍 Campaigns with metrics:', JSON.stringify(campaignsWithMetrics, null, 2));
       return res.json({ 
-        message: "Campaigns retrieved successfully", 
+        message: "Campaigns with metrics retrieved successfully", 
         success: true, 
-        data: campaignsData.data || []
+        data: campaignsWithMetrics
       });
 
     } catch (error) {
@@ -2021,9 +2081,25 @@ app.get("/api/diagnostic", async (_req, res) => {
 // 🚀 Routes principales
 app.use("/api/auth", authRoutes);
 app.use("/api/facebook", facebookRoutes);
+app.use("/api/schedules", scheduleRoutes);
+app.use("/api/stop-loss", stopLossRoutes);
+
+// Test endpoint for debugging
+app.get('/api/test', (req, res) => {
+  console.log('🔍 Test endpoint called');
+  res.json({ 
+    message: 'Backend is working!', 
+    timestamp: new Date().toISOString(),
+    user: req.user || 'No user'
+  });
+});
 
 // 🚀 Démarrage du serveur
-const PORT = process.env.PORT || 5001;
+const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
   console.log(`✅ Server running at http://localhost:${PORT}`);
+  
+  // Démarrer les services
+  startScheduleService();
+  startStopLossService();
 });

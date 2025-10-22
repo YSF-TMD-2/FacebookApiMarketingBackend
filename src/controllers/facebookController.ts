@@ -650,19 +650,77 @@ export async function getAccountInsights(req: Request, res: Response) {
 // GET /api/facebook/campaigns/:campaignId/adsets - Récupérer les ad sets
 export async function getCampaignAdsets(req: Request, res: Response) {
     try {
+        console.log('🔍 getCampaignAdsets called with campaignId:', req.params.campaignId);
+        
         const userId = req.user!.id;
         const { campaignId } = req.params;
         
+        console.log('🔍 User ID:', userId);
+        
         const tokenRow = await getFacebookToken(userId);
+        console.log('🔍 Token retrieved:', tokenRow.token ? 'Yes' : 'No');
 
-        // Récupérer les ad sets de la campagne
+        // Récupérer les ad sets de base de la campagne
         const endpoint = `${campaignId}/adsets?fields=id,name,status,created_time,updated_time`;
-        const adsets = await fetchFbGraph(tokenRow.token, endpoint);
+        console.log('🔍 Calling Facebook API with endpoint:', endpoint);
+        
+        const adsetsResponse = await fetchFbGraph(tokenRow.token, endpoint);
+        console.log('🔍 Facebook API response:', adsetsResponse);
 
-        await createLog(userId, "ADSETS_RETRIEVED", { campaignId, adsets });
-        return res.json({ adsets: adsets.data || [] });
+        // Récupérer les métriques pour chaque ad set
+        const adsetsWithMetrics = [];
+        for (const adset of adsetsResponse.data || []) {
+            try {
+                const insightsEndpoint = `${adset.id}/insights?fields=spend,impressions,clicks,reach,frequency,cpc,cpm,ctr,conversions&date_preset=last_30d`;
+                const insights = await fetchFbGraph(tokenRow.token, insightsEndpoint);
+                const insightData = insights.data?.[0] || {};
+                
+                adsetsWithMetrics.push({
+                    ...adset,
+                    campaign_id: campaignId,
+                    spend: parseFloat(insightData.spend || 0),
+                    impressions: parseInt(insightData.impressions || 0),
+                    clicks: parseInt(insightData.clicks || 0),
+                    reach: parseInt(insightData.reach || 0),
+                    conversions: parseInt(insightData.conversions || 0),
+                    ctr: parseFloat(insightData.ctr || 0),
+                    cpc: parseFloat(insightData.cpc || 0),
+                    cpm: parseFloat(insightData.cpm || 0),
+                    frequency: parseFloat(insightData.frequency || 0),
+                    conversion_rate: insightData.clicks > 0 ? (insightData.conversions / insightData.clicks) * 100 : 0
+                });
+            } catch (insightsError) {
+                console.log('⚠️ Error fetching insights for adset', adset.id, ':', insightsError.message);
+                // Ajouter l'adset sans métriques en cas d'erreur
+                adsetsWithMetrics.push({
+                    ...adset,
+                    campaign_id: campaignId,
+                    spend: 0,
+                    impressions: 0,
+                    clicks: 0,
+                    reach: 0,
+                    conversions: 0,
+                    ctr: 0,
+                    cpc: 0,
+                    cpm: 0,
+                    frequency: 0,
+                    conversion_rate: 0
+                });
+            }
+        }
+
+        await createLog(userId, "ADSETS_RETRIEVED", { campaignId, adsets: adsetsWithMetrics });
+        return res.json({ adsets: adsetsWithMetrics });
 
     } catch (error: any) {
+        console.error('❌ Error in getCampaignAdsets:', error);
+        console.error('❌ Error details:', {
+            message: error.message,
+            status: error.response?.status,
+            data: error.response?.data,
+            stack: error.stack
+        });
+        
         return res.status(500).json({ 
             message: error.message || "Server error",
             details: error.response?.data || null
@@ -673,19 +731,57 @@ export async function getCampaignAdsets(req: Request, res: Response) {
 // GET /api/facebook/adsets/:adsetId/ads - Récupérer les annonces
 export async function getAdsetAds(req: Request, res: Response) {
     try {
+        console.log('🔍 getAdsetAds called with adsetId:', req.params.adsetId);
         const userId = req.user!.id;
         const { adsetId } = req.params;
         
         const tokenRow = await getFacebookToken(userId);
 
-        // Récupérer les annonces de l'ad set
+        // Récupérer les annonces de base de l'ad set
         const endpoint = `${adsetId}/ads?fields=id,name,status,created_time,updated_time,creative{id,name,title,body,call_to_action_type,image_url,link_url}`;
+        console.log('🔍 Calling Facebook API with endpoint:', endpoint);
         const ads = await fetchFbGraph(tokenRow.token, endpoint);
+        console.log('🔍 Facebook API response for ads:', ads);
 
-        await createLog(userId, "ADS_RETRIEVED", { adsetId, ads });
-        return res.json({ ads: ads.data || [] });
+        // Récupérer les métriques pour chaque ad
+        const adsWithMetrics = [];
+        for (const ad of ads.data || []) {
+            try {
+                const insightsEndpoint = `${ad.id}/insights?fields=spend,impressions,clicks,reach,frequency,cpc,cpm,ctr,conversions&date_preset=last_30d`;
+                const insights = await fetchFbGraph(tokenRow.token, insightsEndpoint);
+                const insightData = insights.data?.[0] || {};
+                
+                adsWithMetrics.push({
+                    ...ad,
+                    adset_id: adsetId,
+                    spend: parseFloat(insightData.spend || 0),
+                    impressions: parseInt(insightData.impressions || 0),
+                    clicks: parseInt(insightData.clicks || 0),
+                    reach: parseInt(insightData.reach || 0),
+                    conversions: parseInt(insightData.conversions || 0),
+                    ctr: parseFloat(insightData.ctr || 0),
+                    cpc: parseFloat(insightData.cpc || 0),
+                    cpm: parseFloat(insightData.cpm || 0),
+                    frequency: parseFloat(insightData.frequency || 0),
+                    conversion_rate: insightData.clicks > 0 ? (insightData.conversions / insightData.clicks) * 100 : 0
+                });
+            } catch (insightsError: any) {
+                console.log('⚠️ Error fetching insights for ad', ad.id, ':', insightsError.message);
+                // Ajouter l'ad sans métriques en cas d'erreur
+                adsWithMetrics.push({
+                    ...ad,
+                    adset_id: adsetId,
+                    spend: 0, impressions: 0, clicks: 0, reach: 0, conversions: 0,
+                    ctr: 0, cpc: 0, cpm: 0, frequency: 0, conversion_rate: 0
+                });
+            }
+        }
+
+        await createLog(userId, "ADS_RETRIEVED", { adsetId, ads: adsWithMetrics });
+        return res.json({ ads: adsWithMetrics });
 
     } catch (error: any) {
+        console.error('❌ Error in getAdsetAds:', error);
         return res.status(500).json({ 
             message: error.message || "Server error",
             details: error.response?.data || null
@@ -699,13 +795,26 @@ export async function updateAdStatus(req: Request, res: Response) {
         const userId = req.user!.id;
         const { adId } = req.params;
         const { status } = req.body;
-        const tokenRow = await getFacebookToken(userId);
-
+        
+        console.log(`🔄 updateAdStatus called - User: ${userId}, AdId: ${adId}, Status: ${status}`);
+        
+        if (!adId) {
+            return res.status(400).json({ message: "Ad ID is required" });
+        }
+        
         if (!status) {
             return res.status(400).json({ message: "Status is required" });
         }
 
+        if (!['ACTIVE', 'PAUSED'].includes(status)) {
+            return res.status(400).json({ message: "Status must be ACTIVE or PAUSED" });
+        }
+
+        const tokenRow = await getFacebookToken(userId);
+        console.log(`🔑 Token retrieved for user: ${userId}`);
+
         // Mettre à jour le statut de l'annonce via l'API Facebook
+        console.log(`📡 Calling Facebook API to update ad ${adId} status to ${status}`);
         const response = await axios.post(
             `https://graph.facebook.com/v18.0/${adId}`,
             { status },
@@ -717,12 +826,29 @@ export async function updateAdStatus(req: Request, res: Response) {
             }
         );
 
+        console.log(`✅ Facebook API response:`, response.data);
+
         await createLog(userId, "AD_STATUS_UPDATED", { adId, status, response: response.data });
-        return res.json({ message: "Ad status updated successfully", data: response.data });
+        return res.json({ 
+            success: true,
+            message: "Ad status updated successfully", 
+            data: response.data 
+        });
 
     } catch (error: any) {
-        console.error('Error updating ad status:', error);
-        return res.status(500).json({ message: error.message || "Server error" });
+        console.error('❌ Error updating ad status:', error);
+        console.error('❌ Error details:', {
+            message: error.message,
+            status: error.response?.status,
+            data: error.response?.data,
+            stack: error.stack
+        });
+        
+        return res.status(500).json({ 
+            success: false,
+            message: error.message || "Server error",
+            details: error.response?.data || null
+        });
     }
 }
 
