@@ -24,6 +24,7 @@ CREATE TABLE logs (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
+
 -- Index pour optimiser les performances
 CREATE INDEX idx_access_tokens_user_id ON access_tokens(user_id);
 CREATE INDEX idx_logs_user_id ON logs(user_id);
@@ -54,6 +55,13 @@ CREATE POLICY "Users can view their own logs" ON logs
 CREATE POLICY "Users can insert their own logs" ON logs
     FOR INSERT WITH CHECK (auth.uid() = user_id);
 
+CREATE POLICY "Users can update their own logs" ON logs
+    FOR UPDATE USING (auth.uid() = user_id);
+
+CREATE POLICY "Users can delete their own logs" ON logs
+    FOR DELETE USING (auth.uid() = user_id);
+
+
 -- Fonction pour mettre à jour updated_at automatiquement
 CREATE OR REPLACE FUNCTION update_updated_at_column()
 RETURNS TRIGGER AS $$
@@ -67,3 +75,4 @@ $$ language 'plpgsql';
 CREATE TRIGGER update_access_tokens_updated_at 
     BEFORE UPDATE ON access_tokens 
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+

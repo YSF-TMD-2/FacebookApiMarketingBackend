@@ -1,6 +1,6 @@
 import { Router } from "express";
 import protect from "../middleware/authMiddleware.js";
-import { saveAccessToken, getUserData, getFbData, getAdAccounts, getAccountCampaigns, getAccountInsights, getCampaignAdsets, getAdsetAds, updateAdStatus, disconnectFacebook, clearFacebookCache, abortFacebookRequests, getFacebookToken, fetchFbGraph, getCompleteAnalytics, getBusinessAdAccounts, getAccountAnalytics, facebookDiagnostic, testFacebookSimple, testAdAccounts, handleOAuthCallback } from "../controllers/facebookController.js";
+import { saveAccessToken, getUserData, getFbData, getAdAccounts, getAccountCampaigns, getAccountInsights, getCampaignAdsets, getAdsetAds, updateAdStatus, disconnectFacebook, clearFacebookCache, abortFacebookRequests, getFacebookToken, fetchFbGraph, getCompleteAnalytics, getBusinessAdAccounts, getAccountAnalytics, facebookDiagnostic, testFacebookSimple, testAdAccounts, handleOAuthCallback, getAccountTotalSpend } from "../controllers/facebookController.js";
 import { Request, Response } from "../types/express.js";
 
 const router = Router();
@@ -28,6 +28,9 @@ router.get("/account/:accountId/campaigns", protect, getAccountCampaigns);
 
 // get ads insights for a specific ad account
 router.get("/account/:accountId/insights", protect, getAccountInsights);
+
+// get total spend for a specific ad account (all campaigns with date range)
+router.get("/account/:accountId/total-spend", protect, getAccountTotalSpend);
 
 // get insights for a specific campaign
 router.get("/campaign/:campaignId/insights", protect, async (req: Request, res: Response) => {
@@ -144,9 +147,7 @@ router.get("/ad/:adId", protect, async (req: Request, res: Response) => {
     try {
         const userId = req.user!.id;
         const { adId } = req.params;
-        console.log("this is ad details data request", req.body);
         
-        console.log(` Fetching ad details for: ${adId}`);
         
         const tokenRow = await getFacebookToken(userId);
 
@@ -155,7 +156,8 @@ router.get("/ad/:adId", protect, async (req: Request, res: Response) => {
         console.log(`Facebook API endpoint: ${endpoint}`);
         
         const adDetails = await fetchFbGraph(tokenRow.token, endpoint);
-        console.log(` Ad details retrieved:`, JSON.stringify(adDetails, null, 2));
+        console.log(`🔍 Ad details retrieved:`, JSON.stringify(adDetails, null, 2));
+        console.log(`🔍 Ad status:`, adDetails.status);
 
         return res.json({ 
             success: true,
@@ -242,14 +244,12 @@ router.get("/image-proxy", protect, async (req: Request, res: Response) => {
         console.log('✅ Image buffer size:', imageBuffer.byteLength);
         
         // Définir les headers pour l'image
-        res.set({
-            'Content-Type': response.headers.get('content-type') || 'image/jpeg',
-            'Content-Length': imageBuffer.byteLength.toString(),
-            'Cache-Control': 'public, max-age=86400', // 24 heures
-            'Access-Control-Allow-Origin': '*',
-            'Access-Control-Allow-Methods': 'GET',
-            'Access-Control-Allow-Headers': 'Content-Type, Authorization'
-        });
+        res.header('Content-Type', response.headers.get('content-type') || 'image/jpeg');
+        res.header('Content-Length', imageBuffer.byteLength.toString());
+        res.header('Cache-Control', 'public, max-age=86400'); // 24 heures
+        res.header('Access-Control-Allow-Origin', '*');
+        res.header('Access-Control-Allow-Methods', 'GET');
+        res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
         
         res.send(Buffer.from(imageBuffer));
         

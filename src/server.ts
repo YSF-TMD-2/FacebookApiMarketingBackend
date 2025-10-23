@@ -5,16 +5,12 @@ import authRoutes from "./routes/authRoutes.js";
 import facebookRoutes from "./routes/facebookRoutes.js";
 import scheduleRoutes from "./routes/scheduleRoutes.js";
 import stopLossRoutes from "./routes/stopLossRoutes.js";
+import logsRoutes from "./routes/logsRoutes.js";
 import { startScheduleService } from "./controllers/scheduleController.js";
 import { startStopLossService } from "./controllers/stopLossController.js";
 
 dotenv.config();
 
-// Vérifier les variables d'environnement au démarrage
-console.log('🔍 Environment variables check:');
-console.log('  FB_CLIENT_ID:', process.env.FB_CLIENT_ID ? 'SET' : 'NOT SET');
-console.log('  FB_APP_SECRET:', process.env.FB_APP_SECRET ? 'SET' : 'NOT SET');
-console.log('  NODE_ENV:', process.env.NODE_ENV || 'development');
 
 const app = express();
 
@@ -242,27 +238,9 @@ app.get("/api/simple-test", (req, res) => {
   });
 });
 
-// 🔍 Test endpoint pour vérifier l'URL de base
-app.get("/api/url-test", (req, res) => {
-  res.json({
-    message: "URL test successful!",
-    backendUrl: "https://facebook-api-marketing-backend.vercel.app",
-    requestUrl: req.url,
-    origin: req.headers.origin,
-    timestamp: new Date().toISOString()
-  });
-});
 
-// 🔍 Test endpoint direct (sans /api)
-app.get("/direct-test", (req, res) => {
-  res.json({
-    message: "Direct test successful!",
-    backendUrl: "https://facebook-api-marketing-backend.vercel.app",
-    requestUrl: req.url,
-    origin: req.headers.origin,
-    timestamp: new Date().toISOString()
-  });
-});
+
+
 
 // 🔍 Endpoints de compatibilité (sans /api) pour le frontend
 app.get("/cors-test", (req, res) => {
@@ -297,13 +275,8 @@ app.get("/facebook/data", async (req, res) => {
     const authHeader = req.headers.authorization;
     const token = authHeader ? authHeader.replace('Bearer ', '') : null;
     
-    console.log('🔍 /facebook/data request:', {
-      hasAuthHeader: !!authHeader,
-      tokenLength: token ? token.length : 0,
-      tokenStart: token ? token.substring(0, 10) + '...' : 'None',
-      origin: req.headers.origin,
-      userAgent: req.headers['user-agent']
-    });
+    // Log réduit pour éviter le spam
+    console.log('🔍 /facebook/data request - Token length:', token ? token.length : 0);
     
     if (!token) {
       return res.status(401).json({
@@ -317,14 +290,8 @@ app.get("/facebook/data", async (req, res) => {
     }
     
     // Tester le token avec Facebook d'abord
-    console.log('🔍 Testing token with Facebook...');
     const testResponse = await fetch(`https://graph.facebook.com/v18.0/me?access_token=${token}`);
     const testData = await testResponse.json();
-
-    console.log('🔍 Facebook test response:', {
-      status: testResponse.status,
-      data: testData
-    });
 
     if (testData.error) {
       return res.status(400).json({
@@ -424,7 +391,7 @@ app.post("/facebook/token", async (req, res) => {
         });
       }
       
-      console.log('🔑 Valid Facebook token received for user:', validationData.name);
+      
       
       // Ici vous pourriez sauvegarder le token en base de données
       // Pour l'instant, on le retourne dans la réponse pour que le frontend puisse l'utiliser
@@ -612,17 +579,9 @@ app.get("/api/facebook/data", (req, res) => {
   });
 });
 
-// 🔍 Test endpoint Facebook data simple (sans authentification)
-app.get("/api/facebook/data-test", (req, res) => {
-  res.json({
-    message: "Facebook data test endpoint working!",
-    timestamp: new Date().toISOString(),
-    url: req.url,
-    method: req.method
-  });
-});
 
-// Endpoint supprimé - utilise celui dans facebookController.ts via les routes
+
+
 
 // Cache pour les données analytics
 const analyticsCache = new Map();
@@ -715,7 +674,7 @@ app.get("/api/facebook/adaccounts-simple", async (req, res) => {
       console.log('🔍 Fetching all ad accounts...');
       const adAccountsResponse = await fetch(`https://graph.facebook.com/v18.0/me/adaccounts?access_token=${tokenRow.token}&fields=id,name,account_id,currency,timezone_name,business_name,business_id,created_time,amount_spent,balance,spend_cap,account_status,disable_reason`);
       const adAccountsData = await adAccountsResponse.json();
-
+      console.log("this is adacounts data : " , adAccountsData);
       if (adAccountsData.error) {
         console.error('❌ Facebook API error:', adAccountsData.error);
         return res.status(400).json({ 
@@ -724,7 +683,7 @@ app.get("/api/facebook/adaccounts-simple", async (req, res) => {
         });
       }
 
-      console.log('✅ Simple ad accounts fetched successfully:', adAccountsData.data?.length || 0, 'accounts');
+      
       return res.json({ 
         message: "Ad accounts retrieved successfully", 
         success: true, 
@@ -1489,139 +1448,6 @@ app.get("/api/facebook/business/:businessId/adaccounts", async (req, res) => {
   }
 });
 
-// 🔍 Endpoint de diagnostic pour tester l'API Facebook
-app.get("/api/facebook/debug-adaccounts", async (req, res) => {
-  try {
-    const authHeader = req.headers.authorization;
-    const token = authHeader ? authHeader.replace('Bearer ', '') : null;
-    
-    if (!token) {
-      return res.status(401).json({ 
-        message: "No access token provided", 
-        success: false 
-      });
-    }
-
-    // Décoder le JWT pour obtenir l'userId
-    let userId = null;
-    try {
-      const payload = JSON.parse(Buffer.from(token.split('.')[1], 'base64').toString());
-      userId = payload.sub;
-      console.log('🔍 Debug adaccounts for userId:', userId);
-    } catch (error) {
-      console.error('❌ Error decoding JWT:', error);
-      return res.status(401).json({ message: "Invalid token", success: false });
-    }
-
-    // Récupérer le token Facebook de l'utilisateur
-    const { supabase } = await import("./supabaseClient.js");
-    const { data: tokenRow, error: tokenError } = await supabase
-      .from('access_tokens')
-      .select('token')
-      .eq('userId', userId)
-      .single() as any;
-
-    if (tokenError || !tokenRow) {
-      return res.status(404).json({ 
-        message: "No Facebook token found", 
-        success: false 
-      });
-    }
-
-    console.log('🔍 Testing Facebook API with token:', tokenRow.token.substring(0, 10) + '...');
-
-    // Test 1: Informations utilisateur de base
-    let userInfo = null;
-    try {
-      const userResponse = await fetch(`https://graph.facebook.com/v18.0/me?access_token=${tokenRow.token}`);
-      const userData = await userResponse.json();
-      console.log('🔍 User info response:', userData);
-      userInfo = userData;
-    } catch (error) {
-      console.error('❌ Error fetching user info:', error);
-    }
-
-    // Test 2: Comptes publicitaires avec différents endpoints
-    const adAccountsTests = [];
-    
-    // Test 2a: Endpoint simple
-    try {
-      const simpleResponse = await fetch(`https://graph.facebook.com/v18.0/me/adaccounts?access_token=${tokenRow.token}`);
-      const simpleData = await simpleResponse.json();
-      console.log('🔍 Simple adaccounts response:', simpleData);
-      adAccountsTests.push({
-        test: 'Simple endpoint',
-        success: !simpleData.error,
-        data: simpleData,
-        error: simpleData.error
-      });
-    } catch (error) {
-      console.error('❌ Error with simple endpoint:', error);
-      adAccountsTests.push({
-        test: 'Simple endpoint',
-        success: false,
-        error: error.message
-      });
-    }
-
-    // Test 2b: Endpoint avec champs spécifiques
-    try {
-      const fieldsResponse = await fetch(`https://graph.facebook.com/v18.0/me/adaccounts?access_token=${tokenRow.token}&fields=id,name,account_status,currency`);
-      const fieldsData = await fieldsResponse.json();
-      console.log('🔍 Fields adaccounts response:', fieldsData);
-      adAccountsTests.push({
-        test: 'With fields',
-        success: !fieldsData.error,
-        data: fieldsData,
-        error: fieldsData.error
-      });
-    } catch (error) {
-      console.error('❌ Error with fields endpoint:', error);
-      adAccountsTests.push({
-        test: 'With fields',
-        success: false,
-        error: error.message
-      });
-    }
-
-    // Test 2c: Endpoint avec permissions
-    try {
-      const permissionsResponse = await fetch(`https://graph.facebook.com/v18.0/me/permissions?access_token=${tokenRow.token}`);
-      const permissionsData = await permissionsResponse.json();
-      console.log('🔍 Permissions response:', permissionsData);
-      adAccountsTests.push({
-        test: 'Permissions',
-        success: !permissionsData.error,
-        data: permissionsData,
-        error: permissionsData.error
-      });
-    } catch (error) {
-      console.error('❌ Error with permissions:', error);
-      adAccountsTests.push({
-        test: 'Permissions',
-        success: false,
-        error: error.message
-      });
-    }
-
-    return res.json({
-      success: true,
-      message: "Debug completed",
-      userId: userId,
-      userInfo: userInfo,
-      adAccountsTests: adAccountsTests,
-      tokenPreview: tokenRow.token.substring(0, 10) + '...'
-    });
-
-  } catch (error) {
-    console.error('❌ Error in debug endpoint:', error);
-    return res.status(500).json({ 
-      message: "Debug failed", 
-      success: false,
-      error: error.message 
-    });
-  }
-});
 
 // 🔍 Endpoint pour récupérer les Business Managers avec leurs comptes publicitaires
 app.get("/api/facebook/detailed-adaccounts", async (req, res) => {
@@ -1787,13 +1613,153 @@ app.get("/api/facebook/detailed-adaccounts", async (req, res) => {
   }
 });
 
-// 🔍 Endpoint pour récupérer les campagnes d'un compte publicitaire
+// Fonction pour gérer le streaming des campagnes avec Server-Sent Events
+async function handleStreamingCampaigns(req, res, accountId, facebookToken) {
+  try {
+    // Configurer les headers pour Server-Sent Events
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Headers': 'Cache-Control'
+    });
+
+    console.log('🔍 Starting streaming campaigns for account:', accountId);
+
+    // Envoyer un événement de début
+    res.write(`data: ${JSON.stringify({ type: 'start', message: 'Starting to fetch campaigns...' })}\n\n`);
+
+    let allCampaigns = [];
+    let nextUrl = `https://graph.facebook.com/v18.0/${accountId}/campaigns?access_token=${facebookToken}&fields=id,name,status,objective,created_time,updated_time&limit=100`;
+    let pageCount = 0;
+    
+    do {
+      console.log(`🔍 Streaming page ${pageCount + 1}:`, nextUrl);
+      
+      // Envoyer un événement de progression
+      res.write(`data: ${JSON.stringify({ 
+        type: 'progress', 
+        page: pageCount + 1, 
+        message: `Fetching page ${pageCount + 1}...` 
+      })}\n\n`);
+
+      const campaignsResponse = await fetch(nextUrl);
+      const campaignsData = await campaignsResponse.json();
+
+      if (campaignsData.error) {
+        console.error('❌ Facebook API error:', campaignsData.error);
+        res.write(`data: ${JSON.stringify({ 
+          type: 'error', 
+          message: "Facebook API error: " + campaignsData.error.message 
+        })}\n\n`);
+        res.end();
+        return;
+      }
+
+      // Ajouter les campagnes de cette page avec métriques
+      if (campaignsData.data && Array.isArray(campaignsData.data)) {
+        allCampaigns = allCampaigns.concat(campaignsData.data);
+        console.log(`📊 Page ${pageCount + 1}: ${campaignsData.data.length} campaigns, Total so far: ${allCampaigns.length}`);
+        
+        // Récupérer les métriques pour chaque campagne de cette page
+        const campaignsWithMetrics = [];
+        for (const campaign of campaignsData.data) {
+          try {
+            // Récupérer les insights (métriques) pour chaque campagne
+            const insightsUrl = `https://graph.facebook.com/v18.0/${campaign.id}/insights?access_token=${facebookToken}&fields=spend,impressions,clicks,reach,frequency,cpc,cpm,ctr,conversions&date_preset=last_30d`;
+            const insightsResponse = await fetch(insightsUrl);
+            const insightsData = await insightsResponse.json();
+            
+            const insights = insightsData.data?.[0] || {};
+            
+            campaignsWithMetrics.push({
+              ...campaign,
+              account_id: accountId,
+              // Métriques principales
+              spend: parseFloat(insights.spend || 0),
+              impressions: parseInt(insights.impressions || 0),
+              clicks: parseInt(insights.clicks || 0),
+              reach: parseInt(insights.reach || 0),
+              conversions: parseInt(insights.conversions || 0),
+              // Métriques calculées
+              ctr: parseFloat(insights.ctr || 0),
+              cpc: parseFloat(insights.cpc || 0),
+              cpm: parseFloat(insights.cpm || 0),
+              frequency: parseFloat(insights.frequency || 0),
+              conversion_rate: insights.clicks > 0 ? (insights.conversions / insights.clicks) * 100 : 0
+            });
+          } catch (insightsError) {
+            console.error(`❌ Error fetching insights for campaign ${campaign.id}:`, insightsError);
+            // Ajouter la campagne sans métriques
+            campaignsWithMetrics.push({
+              ...campaign,
+              account_id: accountId,
+              spend: 0,
+              impressions: 0,
+              clicks: 0,
+              reach: 0,
+              conversions: 0,
+              ctr: 0,
+              cpc: 0,
+              cpm: 0,
+              frequency: 0,
+              conversion_rate: 0
+            });
+          }
+        }
+        
+        // Envoyer les campagnes avec métriques au frontend
+        res.write(`data: ${JSON.stringify({ 
+          type: 'campaigns', 
+          data: campaignsWithMetrics,
+          page: pageCount + 1,
+          total: allCampaigns.length
+        })}\n\n`);
+      }
+
+      // Vérifier s'il y a une page suivante
+      nextUrl = campaignsData.paging?.next || null;
+      pageCount++;
+
+      // Limiter le nombre de pages pour éviter les boucles infinies
+      if (pageCount >= 50) {
+        console.log(`⚠️ Reached maximum pages limit (50), stopping pagination`);
+        break;
+      }
+
+    } while (nextUrl);
+
+    console.log(`✅ Streaming completed: ${allCampaigns.length} total campaigns across ${pageCount} pages`);
+
+    // Envoyer un événement de fin
+    res.write(`data: ${JSON.stringify({ 
+      type: 'complete', 
+      total: allCampaigns.length,
+      pages: pageCount,
+      message: 'All campaigns loaded successfully!' 
+    })}\n\n`);
+
+    res.end();
+
+  } catch (error) {
+    console.error('❌ Error in streaming campaigns:', error);
+    res.write(`data: ${JSON.stringify({ 
+      type: 'error', 
+      message: error.message 
+    })}\n\n`);
+    res.end();
+  }
+}
+// 🔍 Endpoint pour récupérer les campagnes d'un compte publicitaire avec chargement progressif
 app.get("/api/facebook/campaigns/:accountId", async (req, res) => {
   try {
     const { accountId } = req.params;
-    console.log('🔍 Server campaigns endpoint called for accountId:', accountId);
+    const { stream = 'false', token: urlToken } = req.query; // Paramètre pour activer le streaming
+    console.log('🔍 Server campaigns endpoint called for accountId:', accountId, 'stream:', stream);
+    
     const authHeader = req.headers.authorization;
-    const token = authHeader ? authHeader.replace('Bearer ', '') : null;
+    const token = authHeader ? authHeader.replace('Bearer ', '') : urlToken;
     
     if (!token) {
       return res.status(401).json({ 
@@ -1805,7 +1771,8 @@ app.get("/api/facebook/campaigns/:accountId", async (req, res) => {
     // Décoder le JWT pour obtenir l'userId
     let userId = null;
     try {
-      const payload = JSON.parse(Buffer.from(token.split('.')[1], 'base64').toString());
+      const tokenString = typeof token === 'string' ? token : String(token);
+      const payload = JSON.parse(Buffer.from(tokenString.split('.')[1], 'base64').toString());
       userId = payload.sub;
       console.log('🔍 Fetching campaigns for account:', accountId, 'userId:', userId);
     } catch (error) {
@@ -1828,11 +1795,23 @@ app.get("/api/facebook/campaigns/:accountId", async (req, res) => {
       });
     }
 
-    // Récupérer les campagnes depuis Facebook Graph API
-    try {
-      const campaignsUrl = `https://graph.facebook.com/v18.0/${accountId}/campaigns?access_token=${tokenRow.token}&fields=id,name,status,objective,created_time,updated_time`;
-      const campaignsResponse = await fetch(campaignsUrl);
+    // Si streaming est activé, utiliser Server-Sent Events
+    if (stream === 'true') {
+      return handleStreamingCampaigns(req, res, accountId, tokenRow.token);
+    }
+
+    
+    
+    // Utiliser la pagination pour récupérer TOUTES les campagnes avec les champs de base
+    let allCampaigns = [];
+    let nextUrl = `https://graph.facebook.com/v18.0/${accountId}/campaigns?access_token=${tokenRow.token}&fields=id,name,status,objective,created_time,updated_time,daily_budget,lifetime_budget,start_time,end_time&limit=100`;
+    let pageCount = 0;
+    
+    do {
+      console.log(`🔍 Fetching page ${pageCount + 1}:`, nextUrl);
+      const campaignsResponse = await fetch(nextUrl);
       const campaignsData = await campaignsResponse.json();
+      console.log(` Campaigns data:`, campaignsData);
 
       if (campaignsData.error) {
         console.error('❌ Facebook API error:', campaignsData.error);
@@ -1842,18 +1821,192 @@ app.get("/api/facebook/campaigns/:accountId", async (req, res) => {
         });
       }
 
-      console.log('✅ Campaigns fetched successfully:', campaignsData.data?.length || 0, 'campaigns');
+      // Ajouter les campagnes de cette page
+      if (campaignsData.data && Array.isArray(campaignsData.data)) {
+        allCampaigns = allCampaigns.concat(campaignsData.data);
+        console.log(`📊 Page ${pageCount + 1}: ${campaignsData.data.length} campaigns, Total so far: ${allCampaigns.length}`);
+      }
+
+      // Vérifier s'il y a une page suivante
+      nextUrl = campaignsData.paging?.next || null;
+      pageCount++;
+      
+      
+
+      // Limiter le nombre de pages pour éviter les boucles infinies
+      if (pageCount >= 50) {
+        console.log(`⚠️ Reached maximum pages limit (50), stopping pagination`);
+        break;
+      }
+
+    } while (nextUrl);
+
+    console.log(`✅ Campaigns fetched successfully with pagination: ${allCampaigns.length} total campaigns across ${pageCount} pages`);
 
       // Récupérer les métriques pour chaque campagne
       const campaignsWithMetrics = [];
-      for (const campaign of campaignsData.data || []) {
-        try {
+    
+    // Essayer d'abord de récupérer les insights au niveau du compte
+    console.log(`🔍 Fetching account-level insights for ${accountId}`);
+    try {
+      const accountInsightsUrl = `https://graph.facebook.com/v18.0/${accountId}/insights?access_token=${tokenRow.token}&fields=spend,impressions,clicks,reach,ctr,cpc,cpm,cpp,frequency,actions,conversions,conversion_rate,cost_per_conversion,cost_per_result&date_preset=last_30d&level=campaign`;
+      
+      // Ajouter un timeout pour éviter les blocages
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 30000); // 30 secondes timeout
+      
+      try {
+        const accountInsightsResponse = await fetch(accountInsightsUrl, {
+          signal: controller.signal
+        });
+        clearTimeout(timeoutId);
+        const accountInsightsData = await accountInsightsResponse.json();
+      
+        console.log(`📊 Account insights response:`, accountInsightsData);
+        console.log(`📊 Account insights data length:`, accountInsightsData.data?.length || 0);
+        console.log(`📊 Account insights error:`, accountInsightsData.error);
+        console.log(`📊 Account insights URL:`, accountInsightsUrl);
+        
+        // Créer un map des métriques par campagne
+        const metricsMap = new Map();
+        if (accountInsightsData.data && accountInsightsData.data.length > 0) {
+          for (const insight of accountInsightsData.data) {
+            if (insight.campaign_id) {
+              metricsMap.set(insight.campaign_id, insight);
+              console.log(`📊 Campaign ${insight.campaign_id} metrics:`, {
+                spend: insight.spend,
+                impressions: insight.impressions,
+                clicks: insight.clicks
+              });
+            }
+          }
+        }
+        
+        console.log(`📊 Found metrics for ${metricsMap.size} campaigns`);
+        
+        // Appliquer les métriques aux campagnes
+        for (const campaign of allCampaigns || []) {
+          const campaignMetrics = metricsMap.get(campaign.id) || {};
+          
+          // Extraire les actions spécifiques comme dans Facebook Ads Manager
+          let totalConversions = 0;
+          let messagingConnections = 0;
+          let omniPurchases = 0;
+          let costPerResult = 0;
+          
+          if (campaignMetrics.actions && Array.isArray(campaignMetrics.actions)) {
+            for (const action of campaignMetrics.actions) {
+              if (action.action_type === 'onsite_conversion.total_messaging_connection') {
+                messagingConnections = parseInt(action.value || 0);
+              } else if (action.action_type === 'omni_purchase') {
+                omniPurchases = parseInt(action.value || 0);
+              }
+            }
+            totalConversions = messagingConnections + omniPurchases;
+          }
+          
+          // Utiliser cost_per_result si disponible, sinon calculer
+          costPerResult = parseFloat(campaignMetrics.cost_per_result || 0);
+          if (costPerResult === 0 && totalConversions > 0) {
+            costPerResult = parseFloat(campaignMetrics.spend || 0) / totalConversions;
+          }
+          
+          campaignsWithMetrics.push({
+            ...campaign,
+            account_id: accountId,
+            // Métriques principales (comme Facebook Ads Manager)
+            spend: parseFloat(campaignMetrics.spend || 0),
+            impressions: parseInt(campaignMetrics.impressions || 0),
+            clicks: parseInt(campaignMetrics.clicks || 0),
+            reach: parseInt(campaignMetrics.reach || 0),
+            conversions: totalConversions,
+            messaging_connections: messagingConnections,
+            omni_purchases: omniPurchases,
+            // Métriques calculées
+            ctr: parseFloat(campaignMetrics.ctr || 0),
+            cpc: parseFloat(campaignMetrics.cpc || 0),
+            cpm: parseFloat(campaignMetrics.cpm || 0),
+            frequency: parseFloat(campaignMetrics.frequency || 0),
+            cost_per_result: costPerResult,
+            conversion_rate: campaignMetrics.clicks > 0 ? (totalConversions / campaignMetrics.clicks) * 100 : 0
+          });
+          
+          console.log(`📊 Campaign ${campaign.name} metrics:`, {
+            spend: campaignMetrics.spend || 0,
+            impressions: campaignMetrics.impressions || 0,
+            clicks: campaignMetrics.clicks || 0,
+            ctr: campaignMetrics.ctr || 0
+          });
+        }
+        
+        // Retourner les données avec métriques du compte
+        console.log('🔍 Campaigns with metrics:', JSON.stringify(campaignsWithMetrics, null, 2));
+        return res.json({ 
+          message: "Campaigns with metrics retrieved successfully", 
+          success: true, 
+          data: campaignsWithMetrics
+        });
+        
+      } catch (fetchError) {
+        clearTimeout(timeoutId);
+        if (fetchError.name === 'AbortError') {
+          console.error('❌ Account insights request timed out after 30 seconds');
+          throw new Error('Account insights request timed out');
+        } else {
+          console.error('❌ Account insights fetch error:', fetchError);
+          throw fetchError;
+        }
+      }
+      
+    } catch (accountInsightsError) {
+      console.error('❌ Error fetching account insights:', accountInsightsError);
+      
+      // Fallback: récupérer les métriques campagne par campagne
+      // Traiter TOUTES les campagnes par lots de 50 pour éviter les blocages
+      console.log(`🔍 Processing insights for ALL ${allCampaigns.length} campaigns in batches of 50`);
+      
+      const batchSize = 50;
+      const totalBatches = Math.ceil(allCampaigns.length / batchSize);
+      console.log(`🔍 Will process ${totalBatches} batches of ${batchSize} campaigns each`);
+      
+      for (let batchIndex = 0; batchIndex < totalBatches; batchIndex++) {
+        const startIndex = batchIndex * batchSize;
+        const endIndex = Math.min(startIndex + batchSize, allCampaigns.length);
+        const batchCampaigns = allCampaigns.slice(startIndex, endIndex);
+        
+        console.log(`🔍 Processing batch ${batchIndex + 1}/${totalBatches}: campaigns ${startIndex + 1}-${endIndex} (${batchCampaigns.length} campaigns)`);
+        
+        // Ajouter un délai entre les lots pour éviter les rate limits
+        if (batchIndex > 0) {
+          console.log(`⏳ Waiting 5 seconds before starting batch ${batchIndex + 1}...`);
+          await new Promise(resolve => setTimeout(resolve, 5000));
+        }
+        
+        for (let i = 0; i < batchCampaigns.length; i++) {
+          const campaign = batchCampaigns[i];
+          try {
+            // Ajouter un délai entre les requêtes pour éviter les rate limits
+            if (i > 0) {
+              console.log(`⏳ Waiting 1 second before next request...`);
+              await new Promise(resolve => setTimeout(resolve, 1000));
+            }
+            
           // Récupérer les insights (métriques) pour chaque campagne
-          const insightsUrl = `https://graph.facebook.com/v18.0/${campaign.id}/insights?access_token=${tokenRow.token}&fields=spend,impressions,clicks,reach,frequency,cpc,cpm,ctr,conversions&date_preset=last_30d`;
+            const insightsUrl = `https://graph.facebook.com/v18.0/${campaign.id}/insights?access_token=${tokenRow.token}&fields=spend,impressions,clicks,reach,ctr,cpc,cpm,cpp,frequency,actions,conversions,conversion_rate,cost_per_conversion&date_preset=last_30d`;
+            console.log(`🔍 Fetching insights for campaign ${campaign.id}: ${campaign.name} (${campaign.status}) - ${i + 1}/${batchCampaigns.length} in batch ${batchIndex + 1}`);
           const insightsResponse = await fetch(insightsUrl);
           const insightsData = await insightsResponse.json();
+            
+            console.log(`📊 Insights response for ${campaign.name}:`, insightsData);
           
           const insights = insightsData.data?.[0] || {};
+            
+            // Vérifier si on a des données d'insights
+            if (insightsData.data && insightsData.data.length > 0) {
+              console.log(`✅ Found insights for ${campaign.name}:`, insights);
+            } else {
+              console.log(`⚠️ No insights data for ${campaign.name}, using zeros`);
+            }
           
           campaignsWithMetrics.push({
             ...campaign,
@@ -1872,7 +2025,7 @@ app.get("/api/facebook/campaigns/:accountId", async (req, res) => {
             conversion_rate: insights.clicks > 0 ? (insights.conversions / insights.clicks) * 100 : 0
           });
           
-          console.log(`📊 Metrics for campaign ${campaign.name}:`, {
+            console.log(`📊 Final metrics for campaign ${campaign.name}:`, {
             spend: insights.spend || 0,
             impressions: insights.impressions || 0,
             clicks: insights.clicks || 0,
@@ -1896,21 +2049,16 @@ app.get("/api/facebook/campaigns/:accountId", async (req, res) => {
             frequency: 0,
             conversion_rate: 0
           });
+          }
         }
       }
 
-      console.log('🔍 Campaigns with metrics:', JSON.stringify(campaignsWithMetrics, null, 2));
+      // Retourner les données avec métriques du fallback
+      console.log('🔍 Campaigns with metrics (fallback):', JSON.stringify(campaignsWithMetrics, null, 2));
       return res.json({ 
-        message: "Campaigns with metrics retrieved successfully", 
+        message: "Campaigns with metrics retrieved successfully (fallback)", 
         success: true, 
         data: campaignsWithMetrics
-      });
-
-    } catch (error) {
-      console.error('❌ Error fetching campaigns from Facebook:', error);
-      return res.status(500).json({ 
-        message: "Error fetching campaigns from Facebook", 
-        success: false 
       });
     }
 
@@ -1923,7 +2071,6 @@ app.get("/api/facebook/campaigns/:accountId", async (req, res) => {
     });
   }
 });
-
 // 🔍 Endpoint pour vérifier si l'utilisateur a un token Facebook
 app.get("/api/facebook/status", async (req, res) => {
   try {
@@ -2083,16 +2230,9 @@ app.use("/api/auth", authRoutes);
 app.use("/api/facebook", facebookRoutes);
 app.use("/api/schedules", scheduleRoutes);
 app.use("/api/stop-loss", stopLossRoutes);
+app.use("/api/logs", logsRoutes);
 
-// Test endpoint for debugging
-app.get('/api/test', (req, res) => {
-  console.log('🔍 Test endpoint called');
-  res.json({ 
-    message: 'Backend is working!', 
-    timestamp: new Date().toISOString(),
-    user: req.user || 'No user'
-  });
-});
+
 
 // 🚀 Démarrage du serveur
 const PORT = process.env.PORT || 5000;
@@ -2100,6 +2240,8 @@ app.listen(PORT, () => {
   console.log(`✅ Server running at http://localhost:${PORT}`);
   
   // Démarrer les services
+  console.log('🚀 Starting background services...');
   startScheduleService();
   startStopLossService();
+  console.log('✅ All background services started');
 });
