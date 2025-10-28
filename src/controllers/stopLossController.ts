@@ -166,7 +166,19 @@ export async function deleteStopLossConfig(req: Request, res: Response) {
 // Surveiller les métriques et exécuter les actions stop loss
 export async function monitorStopLoss() {
     try {
-        console.log('🔍 Monitoring stop loss conditions...');
+        // Vérifier s'il y a des configurations actives
+        let hasActiveConfigs = false;
+        for (const [userId, userConfigs] of stopLossConfigs.entries()) {
+            if (userConfigs.some(config => config.enabled)) {
+                hasActiveConfigs = true;
+                break;
+            }
+        }
+        
+        // Ne logger que s'il y a des configurations actives
+        if (hasActiveConfigs) {
+            console.log('🔍 Monitoring stop loss conditions...');
+        }
         
         for (const [userId, userConfigs] of stopLossConfigs.entries()) {
             for (const config of userConfigs) {

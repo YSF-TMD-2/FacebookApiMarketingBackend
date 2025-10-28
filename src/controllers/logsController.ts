@@ -106,3 +106,4 @@ export async function getLogStats(req: Request, res: Response) {
         });
     }
 }
+

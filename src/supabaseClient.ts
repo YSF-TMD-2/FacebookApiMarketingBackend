@@ -57,6 +57,32 @@ export interface Database {
           userAgent?: string | null;
         };
       };
+               thresholds: {
+                 Row: {
+                   id: number;
+                   user_id: string;
+                   cost_per_result_threshold: number;
+                   zero_results_spend_threshold: number;
+                   created_at: string;
+                   updated_at: string;
+                 };
+                 Insert: {
+                   id?: number;
+                   user_id: string;
+                   cost_per_result_threshold: number;
+                   zero_results_spend_threshold: number;
+                   created_at?: string;
+                   updated_at?: string;
+                 };
+                 Update: {
+                   id?: number;
+                   user_id?: string;
+                   cost_per_result_threshold?: number;
+                   zero_results_spend_threshold?: number;
+                   created_at?: string;
+                   updated_at?: string;
+                 };
+               };
     };
   };
 }

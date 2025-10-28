@@ -2,40 +2,85 @@ import { Request, Response } from "../types/express.js";
 import { getFacebookToken, fetchFbGraph } from "./facebookController.js";
 import { createLog } from "../services/loggerService.js";
 import { supabase } from "../supabaseClient.js";
+import { ThresholdsService } from "../services/thresholdsService.js";
 
 // Interface pour les données de schedule
 interface ScheduleData {
     adId: string;
-    scheduleType: 'START' | 'STOP' | 'PAUSE';
+    scheduleType: 'START' | 'STOP' | 'PAUSE' | 'RECURRING_DAILY';
     scheduledDate: string;
     timezone: string;
     startMinutes?: number;
     endMinutes?: number;
+    stopMinutes1?: number; // STOP 1 pour recurring
+    stopMinutes2?: number; // STOP 2 pour recurring
+    startMinutes2?: number; // ACTIVE 2 pour recurring
     executedAt?: string; // Date de dernière exécution
     lastAction?: string; // Dernière action exécutée
+    lastExecutionDate?: string; // Date de la dernière exécution (pour recurring daily)
 }
 
 // Stockage temporaire des schedules (en production, utiliser une base de données)
 const schedules: Map<string, ScheduleData[]> = new Map();
 
 // Fonction pour vérifier si un schedule doit être exécuté
-function checkIfScheduleShouldExecute(schedule: ScheduleData, now: Date): boolean {
+function checkIfScheduleShouldExecute(schedule: ScheduleData, now: Date): { shouldExecute: boolean; action?: string } {
     const scheduledTime = new Date(schedule.scheduledDate);
+    const currentMinutes = now.getHours() * 60 + now.getMinutes();
+    const currentDate = now.toISOString().split('T')[0]; // Format: YYYY-MM-DD
     
     console.log(`🔍 Checking schedule for ad ${schedule.adId}:`, {
         scheduleType: schedule.scheduleType,
-        startMinutes: schedule.startMinutes,
-        endMinutes: schedule.endMinutes,
-        executedAt: schedule.executedAt,
-        lastAction: schedule.lastAction,
-        currentTime: now.toISOString()
+        currentMinutes,
+        lastExecutionDate: schedule.lastExecutionDate,
+        currentDate
     });
     
-    // Vérifier si c'est un schedule avec plage horaire
-    if (schedule.startMinutes !== undefined && schedule.endMinutes !== undefined) {
-        const today = new Date();
-        const currentMinutes = today.getHours() * 60 + today.getMinutes();
+    // Gérer RECURRING_DAILY avec 4 actions
+    if (schedule.scheduleType === 'RECURRING_DAILY' && 
+        schedule.stopMinutes1 !== undefined && 
+        schedule.startMinutes !== undefined && 
+        schedule.stopMinutes2 !== undefined && 
+        schedule.startMinutes2 !== undefined) {
         
+        // Vérifier si on a déjà exécuté une action aujourd'hui
+        if (schedule.lastExecutionDate === currentDate && schedule.lastAction) {
+            console.log(`⏰ Already executed ${schedule.lastAction} today for ad ${schedule.adId}`);
+            
+            // Déterminer quelle est la prochaine action à exécuter
+            if (schedule.lastAction === 'STOP_1' && currentMinutes >= schedule.startMinutes && currentMinutes < schedule.startMinutes + 1) {
+                console.log(`🟢 Time for ACTIVE_1 at ${currentMinutes}`);
+                return { shouldExecute: true, action: 'ACTIVE_1' };
+            } else if (schedule.lastAction === 'ACTIVE_1' && currentMinutes >= schedule.stopMinutes2 && currentMinutes < schedule.stopMinutes2 + 1) {
+                console.log(`🔴 Time for STOP_2 at ${currentMinutes}`);
+                return { shouldExecute: true, action: 'STOP_2' };
+            } else if (schedule.lastAction === 'STOP_2' && currentMinutes >= schedule.startMinutes2 && currentMinutes < schedule.startMinutes2 + 1) {
+                console.log(`🟢 Time for ACTIVE_2 at ${currentMinutes}`);
+                return { shouldExecute: true, action: 'ACTIVE_2' };
+            }
+        } else if (schedule.lastExecutionDate !== currentDate) {
+            // Nouveau jour - vérifier quelle action doit être exécutée
+            if (currentMinutes >= schedule.stopMinutes1 && currentMinutes < schedule.stopMinutes1 + 1) {
+                console.log(`🔴 Time for STOP_1 (new day) at ${currentMinutes}`);
+                return { shouldExecute: true, action: 'STOP_1' };
+            } else if (currentMinutes >= schedule.startMinutes && currentMinutes < schedule.startMinutes + 1) {
+                console.log(`🟢 Time for ACTIVE_1 (new day) at ${currentMinutes}`);
+                return { shouldExecute: true, action: 'ACTIVE_1' };
+            } else if (currentMinutes >= schedule.stopMinutes2 && currentMinutes < schedule.stopMinutes2 + 1) {
+                console.log(`🔴 Time for STOP_2 (new day) at ${currentMinutes}`);
+                return { shouldExecute: true, action: 'STOP_2' };
+            } else if (currentMinutes >= schedule.startMinutes2 && currentMinutes < schedule.startMinutes2 + 1) {
+                console.log(`🟢 Time for ACTIVE_2 (new day) at ${currentMinutes}`);
+                return { shouldExecute: true, action: 'ACTIVE_2' };
+            }
+        }
+        
+        console.log(`⏰ No action needed for recurring ad ${schedule.adId} at ${currentMinutes} minutes`);
+        return { shouldExecute: false };
+    }
+    
+    // Vérifier si c'est un schedule avec plage horaire (ancien système)
+    if (schedule.startMinutes !== undefined && schedule.endMinutes !== undefined) {
         console.log(`🕐 Time check for ad ${schedule.adId}:`, {
             currentMinutes,
             startMinutes: schedule.startMinutes,
@@ -47,23 +92,23 @@ function checkIfScheduleShouldExecute(schedule: ScheduleData, now: Date): boolea
         // Si c'est la première exécution (heure de début)
         if (!schedule.executedAt && currentMinutes >= schedule.startMinutes && currentMinutes < schedule.endMinutes) {
             console.log(`🕐 Time to START ad ${schedule.adId} (current: ${currentMinutes}, start: ${schedule.startMinutes})`);
-            return true;
+            return { shouldExecute: true, action: 'START' };
         }
         
         // Si c'est l'heure de fin
         if (schedule.executedAt && schedule.lastAction === 'START' && currentMinutes >= schedule.endMinutes) {
             console.log(`🕐 Time to STOP ad ${schedule.adId} (current: ${currentMinutes}, end: ${schedule.endMinutes})`);
-            return true;
+            return { shouldExecute: true, action: 'STOP' };
         }
         
         console.log(`⏰ No action needed for ad ${schedule.adId} at ${currentMinutes} minutes`);
-        return false;
+        return { shouldExecute: false };
     }
     
     // Schedule ponctuel - exécuter si la date/heure est atteinte
     const shouldExecute = now >= scheduledTime;
     console.log(`🕐 Schedule check for ad ${schedule.adId}: now=${now.toISOString()}, scheduled=${scheduledTime.toISOString()}, shouldExecute=${shouldExecute}`);
-    return shouldExecute;
+    return { shouldExecute, action: schedule.scheduleType };
 }
 
 // Créer un schedule pour une ad
@@ -71,12 +116,12 @@ export async function createSchedule(req: Request, res: Response) {
     try {
         const userId = req.user!.id;
         const { adId } = req.params;
-        const { scheduleType, scheduledDate, timezone, startMinutes, endMinutes } = req.body;
+        const { scheduleType, scheduledDate, timezone, startMinutes, endMinutes, stopMinutes1, stopMinutes2, startMinutes2 } = req.body;
 
         console.log('🔍 Creating schedule for ad:', adId, 'Type:', scheduleType);
         console.log('🔍 Request body:', req.body);
         console.log('🔍 User ID:', userId);
-        console.log('🔍 Start minutes:', startMinutes, 'End minutes:', endMinutes);
+        console.log('🔍 Recurring times:', { stopMinutes1, startMinutes, stopMinutes2, startMinutes2 });
 
         // Valider l'ID de l'ad
         if (!adId || adId.length < 5) {
@@ -109,10 +154,25 @@ export async function createSchedule(req: Request, res: Response) {
             });
         }
         
-        if (startMinutes !== undefined && endMinutes !== undefined && startMinutes >= endMinutes) {
+        // Validation pour recurring daily (4 temps)
+        if (stopMinutes1 !== undefined && (stopMinutes1 < 0 || stopMinutes1 > 1439)) {
             return res.status(400).json({
                 success: false,
-                message: "Start time must be before end time."
+                message: "Invalid stopMinutes1. Must be between 0 and 1439."
+            });
+        }
+        
+        if (stopMinutes2 !== undefined && (stopMinutes2 < 0 || stopMinutes2 > 1439)) {
+            return res.status(400).json({
+                success: false,
+                message: "Invalid stopMinutes2. Must be between 0 and 1439."
+            });
+        }
+        
+        if (startMinutes2 !== undefined && (startMinutes2 < 0 || startMinutes2 > 1439)) {
+            return res.status(400).json({
+                success: false,
+                message: "Invalid startMinutes2. Must be between 0 and 1439."
             });
         }
 
@@ -176,7 +236,10 @@ export async function createSchedule(req: Request, res: Response) {
             scheduledDate,
             timezone,
             startMinutes,
-            endMinutes
+            endMinutes,
+            stopMinutes1,
+            stopMinutes2,
+            startMinutes2
         };
 
         // Stocker le schedule en mémoire
@@ -263,25 +326,27 @@ export async function createSchedule(req: Request, res: Response) {
 // Exécuter les schedules (à appeler périodiquement)
 export async function executeSchedules() {
     try {
-        console.log('🕐 Executing scheduled tasks...');
-        console.log('🕐 Current time:', new Date().toISOString());
-        
         const now = new Date();
         let totalSchedules = 0;
         let executedSchedules = 0;
         
-        for (const [userId, userSchedules] of schedules.entries()) {
-            console.log(`🔍 Checking ${userSchedules.length} schedules for user ${userId}`);
+        // Compter le nombre total de schedules
+        for (const userSchedules of schedules.values()) {
             totalSchedules += userSchedules.length;
+        }
+        
+        // Ne logger que s'il y a des schedules actifs
+        if (totalSchedules > 0) {
+            console.log(`🕐 Checking ${totalSchedules} active schedule(s)...`);
+        }
+        
+        for (const [userId, userSchedules] of schedules.entries()) {
             
             for (const schedule of userSchedules) {
-                const scheduledTime = new Date(schedule.scheduledDate);
-                console.log(`🔍 Schedule for ad ${schedule.adId}: scheduled at ${scheduledTime.toISOString()}, current time: ${now.toISOString()}`);
-                
                 // Vérifier si le schedule doit être exécuté maintenant
-                const shouldExecute = checkIfScheduleShouldExecute(schedule, now);
-                if (shouldExecute) {
-                    console.log('⚡ Executing schedule for ad:', schedule.adId, 'Type:', schedule.scheduleType);
+                const checkResult = checkIfScheduleShouldExecute(schedule, now);
+                if (checkResult.shouldExecute && checkResult.action) {
+                    console.log(`⚡ Executing schedule for ad ${schedule.adId} - Action: ${checkResult.action}`);
                     
                     try {
                         // Récupérer le token Facebook
@@ -321,39 +386,20 @@ export async function executeSchedules() {
                             continue; // Passer au schedule suivant
                         }
                         
-                        // Exécuter l'action selon le type et la logique de plage horaire
+                        // Exécuter l'action selon le type
                         let newStatus = 'ACTIVE';
                         let actionDescription = 'activate';
-                        let actionType = schedule.scheduleType;
+                        const actionType = checkResult.action!;
                         
-                        // Pour les plages horaires, déterminer l'action selon l'heure actuelle
-                        if (schedule.startMinutes !== undefined && schedule.endMinutes !== undefined) {
-                            const today = new Date();
-                            const currentMinutes = today.getHours() * 60 + today.getMinutes();
-                            
-                            if (!schedule.executedAt) {
-                                // Première exécution - démarrer l'ad
-                                newStatus = 'ACTIVE';
-                                actionDescription = 'start (time range)';
-                                actionType = 'START';
-                            } else if (schedule.lastAction === 'START' && currentMinutes >= schedule.endMinutes) {
-                                // Heure de fin - arrêter l'ad
-                                newStatus = 'PAUSED';
-                                actionDescription = 'stop (time range)';
-                                actionType = 'STOP';
-                            }
-                        } else {
-                            // Schedule ponctuel
-                            if (schedule.scheduleType === 'START') {
-                                newStatus = 'ACTIVE';
-                                actionDescription = 'activate';
-                            } else if (schedule.scheduleType === 'STOP') {
-                                newStatus = 'PAUSED';
-                                actionDescription = 'stop';
-                            } else if (schedule.scheduleType === 'PAUSE') {
+                        // Déterminer le statut selon l'action
+                        if (actionType === 'STOP_1' || actionType === 'STOP_2' || actionType === 'STOP' || actionType === 'PAUSE') {
                             newStatus = 'PAUSED';
-                                actionDescription = 'pause';
-                            }
+                            actionDescription = actionType === 'STOP_1' ? 'stop (STOP 1)' : 
+                                               actionType === 'STOP_2' ? 'stop (STOP 2)' : 'stop';
+                        } else if (actionType === 'ACTIVE_1' || actionType === 'ACTIVE_2' || actionType === 'START') {
+                            newStatus = 'ACTIVE';
+                            actionDescription = actionType === 'ACTIVE_1' ? 'activate (ACTIVE 1)' : 
+                                               actionType === 'ACTIVE_2' ? 'activate (ACTIVE 2)' : 'activate';
                         }
                         
                         console.log(`🔄 ${actionDescription} ad ${schedule.adId} to status: ${newStatus}`);
@@ -439,11 +485,18 @@ export async function executeSchedules() {
                                 console.error('⚠️ Error logging schedule execution:', logError);
                             }
                             
-                            // Pour les schedules avec plages horaires, ne pas supprimer le schedule
-                            // Il sera réutilisé pour l'heure de fin
-                            if (schedule.startMinutes !== undefined && schedule.endMinutes !== undefined) {
+                            // Gérer la persistance du schedule selon le type
+                            if (schedule.scheduleType === 'RECURRING_DAILY') {
+                                // Pour recurring daily, garder le schedule et mettre à jour les infos d'exécution
+                                console.log('🔁 Recurring daily schedule - keeping for next execution');
+                                const currentDate = now.toISOString().split('T')[0];
+                                schedule.lastExecutionDate = currentDate;
+                                schedule.lastAction = actionType;
+                                schedule.executedAt = now.toISOString();
+                                console.log(`✅ Updated recurring schedule: lastAction=${actionType}, lastExecutionDate=${currentDate}`);
+                            } else if (schedule.startMinutes !== undefined && schedule.endMinutes !== undefined) {
+                                // Pour les schedules avec plages horaires (ancien système)
                                 console.log('📅 Schedule with time range - keeping for end time execution');
-                                // Marquer comme exécuté mais garder pour l'heure de fin
                                 schedule.executedAt = now.toISOString();
                                 schedule.lastAction = actionType;
                                 
@@ -455,8 +508,9 @@ export async function executeSchedules() {
                                 }
                             } else {
                                 // Supprimer le schedule exécuté (schedule ponctuel)
-                            const filteredSchedules = userSchedules.filter(s => s !== schedule);
-                            schedules.set(userId, filteredSchedules);
+                                console.log('📅 One-time schedule - removing after execution');
+                                const filteredSchedules = userSchedules.filter(s => s !== schedule);
+                                schedules.set(userId, filteredSchedules);
                             }
                         } else {
                             console.error('❌ Failed to execute schedule for ad:', schedule.adId);
@@ -471,7 +525,10 @@ export async function executeSchedules() {
             }
         }
         
-        console.log(`🕐 Schedule execution completed: ${executedSchedules}/${totalSchedules} schedules executed`);
+        // Logger uniquement s'il y a eu des exécutions
+        if (executedSchedules > 0) {
+            console.log(`✅ Schedule execution completed: ${executedSchedules}/${totalSchedules} schedules executed`);
+        }
         
     } catch (error) {
         console.error('❌ Error in executeSchedules:', error);
@@ -480,21 +537,17 @@ export async function executeSchedules() {
 
 // Démarrer le service de schedules (appelé toutes les minutes)
 export function startScheduleService() {
-    console.log('🚀 Starting schedule service...');
+    console.log('🚀 Schedule service started - checking every 5 seconds');
     
     // Exécuter toutes les 5 secondes pour les tests (changer à 60000 pour la production)
     setInterval(() => {
-        console.log('⏰ Schedule service tick - executing schedules...');
         executeSchedules();
     }, 5000); // 5 secondes pour les tests
     
     // Nettoyer les schedules des tokens expirés toutes les 5 minutes
     setInterval(() => {
-        console.log('🧹 Schedule cleanup tick...');
         cleanupExpiredTokenSchedules();
     }, 300000); // 5 minutes
-    
-    console.log('✅ Schedule service started - will execute every 60 seconds');
 }
 
 // Fonction pour tester manuellement l'exécution des schedules
@@ -814,7 +867,7 @@ export async function debugSchedules(req: Request, res: Response) {
 // Fonction pour nettoyer les schedules des utilisateurs avec des tokens expirés
 export async function cleanupExpiredTokenSchedules() {
     try {
-        console.log('🧹 Cleaning up schedules for users with expired tokens...');
+        let cleanedUsers = 0;
         
         for (const [userId, userSchedules] of schedules.entries()) {
             try {
@@ -825,17 +878,22 @@ export async function cleanupExpiredTokenSchedules() {
                 if (!testResponse.ok) {
                     const testError = await testResponse.json();
                     if (testError.error?.code === 190) {
-                        console.log(`🧹 Removing schedules for user ${userId} with expired token`);
+                        console.log(`🧹 Removing ${userSchedules.length} schedule(s) for user ${userId} (expired token)`);
                         schedules.delete(userId);
+                        cleanedUsers++;
                     }
                 }
             } catch (error) {
-                console.log(`🧹 Removing schedules for user ${userId} (no token found)`);
+                console.log(`🧹 Removing ${userSchedules.length} schedule(s) for user ${userId} (no token found)`);
                 schedules.delete(userId);
+                cleanedUsers++;
             }
         }
         
-        console.log('✅ Schedule cleanup completed');
+        // Logger uniquement s'il y a eu des nettoyages
+        if (cleanedUsers > 0) {
+            console.log(`✅ Schedule cleanup completed: ${cleanedUsers} user(s) cleaned`);
+        }
     } catch (error) {
         console.error('❌ Error in schedule cleanup:', error);
     }
@@ -952,6 +1010,101 @@ export async function createTestTimeRangeSchedule(req: Request, res: Response) {
     }
 }
 
+// Fonction pour récupérer les schedules actifs d'une ad
+export async function getAdSchedules(req: Request, res: Response) {
+    try {
+        const userId = req.user!.id;
+        const { adId } = req.params;
+        
+        console.log('🔍 Getting schedules for ad:', adId);
+        
+        const userSchedules = schedules.get(userId) || [];
+        const adSchedules = userSchedules.filter(s => s.adId === adId);
+        
+        const now = new Date();
+        const currentMinutes = now.getHours() * 60 + now.getMinutes();
+        
+        const schedulesInfo = adSchedules.map(schedule => ({
+            adId: schedule.adId,
+            scheduleType: schedule.scheduleType,
+            scheduledDate: schedule.scheduledDate,
+            timezone: schedule.timezone,
+            startMinutes: schedule.startMinutes,
+            endMinutes: schedule.endMinutes,
+            stopMinutes1: schedule.stopMinutes1,
+            stopMinutes2: schedule.stopMinutes2,
+            startMinutes2: schedule.startMinutes2,
+            executedAt: schedule.executedAt,
+            lastAction: schedule.lastAction,
+            lastExecutionDate: schedule.lastExecutionDate,
+            isRecurring: schedule.scheduleType === 'RECURRING_DAILY',
+            startTime: schedule.startMinutes ? `${Math.floor(schedule.startMinutes / 60)}:${(schedule.startMinutes % 60).toString().padStart(2, '0')}` : null,
+            endTime: schedule.endMinutes ? `${Math.floor(schedule.endMinutes / 60)}:${(schedule.endMinutes % 60).toString().padStart(2, '0')}` : null,
+            stopTime1: schedule.stopMinutes1 ? `${Math.floor(schedule.stopMinutes1 / 60)}:${(schedule.stopMinutes1 % 60).toString().padStart(2, '0')}` : null,
+            stopTime2: schedule.stopMinutes2 ? `${Math.floor(schedule.stopMinutes2 / 60)}:${(schedule.stopMinutes2 % 60).toString().padStart(2, '0')}` : null,
+            startTime2: schedule.startMinutes2 ? `${Math.floor(schedule.startMinutes2 / 60)}:${(schedule.startMinutes2 % 60).toString().padStart(2, '0')}` : null
+        }));
+        
+        console.log('✅ Found schedules for ad:', schedulesInfo);
+        
+        return res.json({
+            success: true,
+            data: {
+                adId,
+                totalSchedules: adSchedules.length,
+                currentTime: now.toISOString(),
+                currentMinutes,
+                schedules: schedulesInfo
+            }
+        });
+        
+    } catch (error: any) {
+        console.error('❌ Error getting ad schedules:', error);
+        return res.status(500).json({
+            success: false,
+            message: error.message || "Server error"
+        });
+    }
+}
+
+// Fonction pour supprimer les schedules d'une ad
+export async function deleteAdSchedules(req: Request, res: Response) {
+    try {
+        const userId = req.user!.id;
+        const { adId } = req.params;
+        
+        console.log('🗑️ Deleting schedules for ad:', adId);
+        
+        const userSchedules = schedules.get(userId) || [];
+        const initialCount = userSchedules.length;
+        
+        // Filter out all schedules for this ad
+        const filteredSchedules = userSchedules.filter(s => s.adId !== adId);
+        const deletedCount = initialCount - filteredSchedules.length;
+        
+        schedules.set(userId, filteredSchedules);
+        
+        console.log(`✅ Deleted ${deletedCount} schedule(s) for ad ${adId}`);
+        
+        return res.json({
+            success: true,
+            message: `Successfully deleted ${deletedCount} schedule(s)`,
+            data: {
+                adId,
+                deletedCount,
+                remainingSchedules: filteredSchedules.length
+            }
+        });
+        
+    } catch (error: any) {
+        console.error('❌ Error deleting ad schedules:', error);
+        return res.status(500).json({
+            success: false,
+            message: error.message || "Server error"
+        });
+    }
+}
+
 // Fonction pour créer un schedule de test simple qui s'exécute immédiatement
 export async function createImmediateTestSchedule(req: Request, res: Response) {
     try {
@@ -1005,5 +1158,66 @@ export async function createImmediateTestSchedule(req: Request, res: Response) {
             success: false,
             message: error.message || "Server error"
         });
+    }
+}
+
+// 🛑 Fonction pour vérifier les conditions de stop loss
+export async function checkStopLossConditions(userId: string, adId: string): Promise<{ shouldStop: boolean; reason?: string; threshold?: number }> {
+    try {
+        // Récupérer les métriques de l'ad
+        const tokenRow = await getFacebookToken(userId);
+        
+        // Récupérer les insights de l'ad pour les dernières 24h
+        const insightsUrl = `https://graph.facebook.com/v18.0/${adId}/insights?access_token=${tokenRow.token}&fields=spend,actions&date_preset=today`;
+        const insightsResponse = await fetch(insightsUrl);
+        const insightsData = await insightsResponse.json();
+        
+        if (insightsData.error) {
+            console.error('❌ Error fetching ad insights for stop loss:', insightsData.error);
+            return { shouldStop: false };
+        }
+        
+        const insights = insightsData.data?.[0];
+        if (!insights) {
+            console.log('📊 No insights data for ad:', adId);
+            return { shouldStop: false };
+        }
+        
+        const spend = parseFloat(insights.spend || 0);
+        let results = 0;
+        
+        // Compter les résultats depuis les actions
+        if (insights.actions && Array.isArray(insights.actions)) {
+            results = insights.actions.reduce((total: number, action: any) => {
+                if (action.action_type === 'lead' || action.action_type === 'purchase' || action.action_type === 'conversion') {
+                    return total + parseInt(action.value || 0);
+                }
+                return total;
+            }, 0);
+        }
+        
+        console.log(`🔍 Stop loss check for ad ${adId}: spend=$${spend}, results=${results}`);
+        
+        // Vérifier les conditions de stop loss
+        const stopLossResult = await ThresholdsService.shouldStopAd(userId, spend, results);
+        
+        if (stopLossResult.shouldStop) {
+            console.log(`🛑 STOP LOSS TRIGGERED for ad ${adId}: ${stopLossResult.reason}`);
+            
+            // Logger l'action de stop loss
+            await createLog(userId, 'STOP_LOSS_TRIGGERED', {
+                adId,
+                spend,
+                results,
+                reason: stopLossResult.reason,
+                threshold: stopLossResult.threshold,
+                timestamp: new Date().toISOString()
+            });
+        }
+        
+        return stopLossResult;
+    } catch (error) {
+        console.error('❌ Error checking stop loss conditions:', error);
+        return { shouldStop: false };
     }
 }

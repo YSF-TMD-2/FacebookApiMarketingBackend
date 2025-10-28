@@ -21,12 +21,5 @@ router.post("/refresh", refreshToken);
 router.get("/me", protect, getMe);
 router.put("/change-password", protect, changePassword);
 
-// Route de test
-router.get("/test", (req: Request, res: Response) => {
-    return res.json({
-        message: "Auth routes working with Supabase",
-        timestamp: new Date().toISOString()
-    });
-});
 
 export default router;

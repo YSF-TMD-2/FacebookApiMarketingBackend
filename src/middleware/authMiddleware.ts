@@ -106,3 +106,4 @@ const protect = async (req: AuthRequest, res: Response, next: NextFunction) => {
 };
 
 export default protect;
+export { protect as authenticateToken };

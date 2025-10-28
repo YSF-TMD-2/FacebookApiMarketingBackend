@@ -11,3 +11,4 @@ router.post("/cleanup", protect, cleanupLogs);
 router.get("/stats", protect, getLogStats);
 
 export default router;
+

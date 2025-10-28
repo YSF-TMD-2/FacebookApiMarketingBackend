@@ -849,7 +849,9 @@ export async function getAdsetAds(req: Request, res: Response) {
             try {
                 const insightsEndpoint = `${ad.id}/insights?fields=spend,impressions,clicks,reach,frequency,cpc,cpm,ctr,conversions&date_preset=last_30d`;
                 const insights = await fetchFbGraph(tokenRow.token, insightsEndpoint);
+                console.log(`📊 Insights for ad ${ad.id}:`, JSON.stringify(insights, null, 2));
                 const insightData = insights.data?.[0] || {};
+                console.log(`📊 Insight data for ad ${ad.id}:`, insightData);
                 
                 adsWithMetrics.push({
                     ...ad,
@@ -1442,9 +1444,26 @@ export async function getAdDetails(req: Request, res: Response) {
         const tokenRow = await getFacebookToken(userId);
 
         // Récupérer les détails de base de l'ad
-        const endpoint = `${adId}?fields=id,name,status,created_time,updated_time,adset_id,campaign_id,creative{id,name,title,body,call_to_action_type,image_url,video_id,link_url}`;
+        const endpoint = `${adId}?fields=id,name,status,created_time,updated_time,adset_id,campaign_id,creative{id,name,title,body,call_to_action_type,image_url,video_id,thumbnail_url,link_url,object_story_spec}`;
         const adDetails = await fetchFbGraph(tokenRow.token, endpoint);
         console.log('🔍 Ad basic details:', adDetails);
+
+        // Si la creative a un video_id, récupérer l'URL de la vidéo
+        if (adDetails.creative?.video_id) {
+            try {
+                const videoEndpoint = `${adDetails.creative.video_id}?fields=source,picture`;
+                const videoDetails = await fetchFbGraph(tokenRow.token, videoEndpoint);
+                console.log('🔍 Video details:', videoDetails);
+                if (videoDetails.source) {
+                    adDetails.creative.video_url = videoDetails.source;
+                }
+                if (videoDetails.picture && !adDetails.creative.thumbnail_url) {
+                    adDetails.creative.thumbnail_url = videoDetails.picture;
+                }
+            } catch (videoError: any) {
+                console.log('⚠️ Could not fetch video URL:', videoError.message);
+            }
+        }
 
         // Récupérer les métriques de l'ad
         let adMetrics = {};

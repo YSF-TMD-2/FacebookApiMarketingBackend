@@ -6,6 +6,7 @@ import facebookRoutes from "./routes/facebookRoutes.js";
 import scheduleRoutes from "./routes/scheduleRoutes.js";
 import stopLossRoutes from "./routes/stopLossRoutes.js";
 import logsRoutes from "./routes/logsRoutes.js";
+import notificationRoutes from "./routes/notificationRoutes.js";
 import { startScheduleService } from "./controllers/scheduleController.js";
 import { startStopLossService } from "./controllers/stopLossController.js";
 
@@ -43,6 +44,36 @@ const isAllowedUrl = (origin: string): boolean => {
   ];
   
   return patterns.some(pattern => pattern.test(origin));
+};
+
+// Fonction utilitaire pour construire les URLs d'insights avec support des paramètres de date
+const buildInsightsUrl = (
+  accountId: string,
+  token: string,
+  fields: string,
+  dateRange?: string,
+  since?: string,
+  until?: string
+): string => {
+  let url = `https://graph.facebook.com/v18.0/${accountId}/insights?access_token=${token}&fields=${fields}`;
+  
+  console.log('🔧 Building insights URL for account:', accountId);
+  console.log('📅 Date parameters:', { dateRange, since, until });
+  
+  if (dateRange) {
+    url += `&date_preset=${dateRange}`;
+    console.log('📊 Using date_preset:', dateRange);
+  } else if (since && until) {
+    url += `&time_range={"since":"${since}","until":"${until}"}`;
+    console.log('📊 Using time_range:', { since, until });
+  } else {
+    // Par défaut, utiliser last_30d
+    url += `&date_preset=last_30d`;
+    console.log('📊 Using default date_preset: last_30d');
+  }
+  
+  console.log('🔗 Final insights URL:', url);
+  return url;
 };
 
 app.use(
@@ -1256,7 +1287,9 @@ app.get("/api/facebook/business/:businessId/adaccounts", async (req, res) => {
     }
 
     const businessId = req.params.businessId;
+    const { dateRange, since, until } = req.query;
     console.log('🔍 Fetching ad accounts for business:', businessId);
+    console.log('📅 Date parameters received:', { dateRange, since, until });
 
     // Vérifier si c'est un Business Manager extrait
     if (businessId.startsWith('extracted_')) {
@@ -1342,8 +1375,15 @@ app.get("/api/facebook/business/:businessId/adaccounts", async (req, res) => {
       const accountsWithAnalytics = await Promise.all(
         adAccounts.map(async (account: any) => {
           try {
-            // Récupérer les insights du compte
-            const insightsUrl = `https://graph.facebook.com/v18.0/${account.account_id}/insights?access_token=${tokenRow.token}&fields=impressions,clicks,spend,reach,conversions,ctr,cpc,conversion_rate&date_preset=last_30d`;
+            // Récupérer les insights du compte avec les paramètres de date
+            const insightsUrl = buildInsightsUrl(
+              account.account_id,
+              tokenRow.token,
+              'impressions,clicks,spend,reach,conversions,ctr,cpc,conversion_rate',
+              dateRange as string,
+              since as string,
+              until as string
+            );
             
             const insightsResponse = await fetch(insightsUrl);
             const insightsData = await insightsResponse.json();
@@ -2231,6 +2271,145 @@ app.use("/api/facebook", facebookRoutes);
 app.use("/api/schedules", scheduleRoutes);
 app.use("/api/stop-loss", stopLossRoutes);
 app.use("/api/logs", logsRoutes);
+app.use("/api/notifications", notificationRoutes);
+
+// Import du service thresholds
+import { ThresholdsService } from './services/thresholdsService.js';
+
+// 🛑 Endpoints pour la gestion des thresholds
+app.get("/api/thresholds", async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    const token = authHeader ? authHeader.replace('Bearer ', '') : null;
+    
+    if (!token) {
+      return res.status(401).json({ 
+        message: "No access token provided", 
+        success: false 
+      });
+    }
+
+    // Décoder le JWT pour obtenir l'userId
+    let userId = null;
+    try {
+      const payload = JSON.parse(Buffer.from(token.split('.')[1], 'base64').toString());
+      userId = payload.sub;
+    } catch (error) {
+      return res.status(401).json({ message: "Invalid token", success: false });
+    }
+
+    const thresholds = await ThresholdsService.getUserThresholds(userId);
+    
+    res.json({
+      success: true,
+      data: thresholds
+    });
+  } catch (error: any) {
+    console.error('❌ Error getting thresholds:', error);
+    res.status(500).json({
+      success: false,
+      message: "Error retrieving thresholds"
+    });
+  }
+});
+
+app.post("/api/thresholds", async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    const token = authHeader ? authHeader.replace('Bearer ', '') : null;
+    
+    if (!token) {
+      return res.status(401).json({ 
+        message: "No access token provided", 
+        success: false 
+      });
+    }
+
+    // Décoder le JWT pour obtenir l'userId
+    let userId = null;
+    try {
+      const payload = JSON.parse(Buffer.from(token.split('.')[1], 'base64').toString());
+      userId = payload.sub;
+    } catch (error) {
+      return res.status(401).json({ message: "Invalid token", success: false });
+    }
+
+    const { costPerResultThreshold, zeroResultsSpendThreshold } = req.body;
+
+    if (typeof costPerResultThreshold !== 'number' || typeof zeroResultsSpendThreshold !== 'number') {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid threshold values"
+      });
+    }
+
+    const success = await ThresholdsService.saveUserThresholds(userId, {
+      costPerResultThreshold,
+      zeroResultsSpendThreshold
+    });
+
+    if (success) {
+      res.json({
+        success: true,
+        message: "Thresholds saved successfully"
+      });
+    } else {
+      res.status(500).json({
+        success: false,
+        message: "Error saving thresholds"
+      });
+    }
+  } catch (error: any) {
+    console.error('❌ Error saving thresholds:', error);
+    res.status(500).json({
+      success: false,
+      message: "Error saving thresholds"
+    });
+  }
+});
+
+app.delete("/api/thresholds", async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    const token = authHeader ? authHeader.replace('Bearer ', '') : null;
+    
+    if (!token) {
+      return res.status(401).json({ 
+        message: "No access token provided", 
+        success: false 
+      });
+    }
+
+    // Décoder le JWT pour obtenir l'userId
+    let userId = null;
+    try {
+      const payload = JSON.parse(Buffer.from(token.split('.')[1], 'base64').toString());
+      userId = payload.sub;
+    } catch (error) {
+      return res.status(401).json({ message: "Invalid token", success: false });
+    }
+
+    const success = await ThresholdsService.resetUserThresholds(userId);
+
+    if (success) {
+      res.json({
+        success: true,
+        message: "Thresholds reset to default"
+      });
+    } else {
+      res.status(500).json({
+        success: false,
+        message: "Error resetting thresholds"
+      });
+    }
+  } catch (error: any) {
+    console.error('❌ Error resetting thresholds:', error);
+    res.status(500).json({
+      success: false,
+      message: "Error resetting thresholds"
+    });
+  }
+});
 
 
 

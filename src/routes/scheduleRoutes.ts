@@ -1,12 +1,18 @@
 import { Router } from "express";
 import protect from "../middleware/authMiddleware.js";
-import { createSchedule, testExecuteSchedules, createTestSchedule, createTestTimeRangeSchedule, debugSchedules, createImmediateTestSchedule, forceExecuteSchedule, getScheduleAnalytics } from "../controllers/scheduleController.js";
+import { createSchedule, testExecuteSchedules, createTestSchedule, createTestTimeRangeSchedule, debugSchedules, createImmediateTestSchedule, forceExecuteSchedule, getScheduleAnalytics, getAdSchedules, deleteAdSchedules } from "../controllers/scheduleController.js";
 import { Request, Response } from "../types/express.js";
 
 const router = Router();
 
 // Créer un schedule pour une ad
 router.post("/ad/:adId", protect, createSchedule);
+
+// Récupérer les schedules actifs d'une ad
+router.get("/ad/:adId", protect, getAdSchedules);
+
+// Supprimer les schedules d'une ad
+router.delete("/ad/:adId", protect, deleteAdSchedules);
 
 
 // Tester l'exécution des schedules (pour debug)
