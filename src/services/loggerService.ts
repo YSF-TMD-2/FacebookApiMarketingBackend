@@ -58,7 +58,7 @@ export type LogAction = typeof LOG_ACTIONS[keyof typeof LOG_ACTIONS];
 
 // Fonction principale de logging
 export async function createLog(
-  userId: string, // Supabase utilise des UUIDs (strings)
+  userId: string, 
   action: LogAction,
   details: AdStatusChangeLog | StopLossConfigLog | ScheduleCreateLog | GeneralLog,
   ip?: string,
@@ -76,12 +76,12 @@ export async function createLog(
       } as any);
     
     if (error) {
-      console.error('❌ Error creating log:', error);
+      console.error(' Error creating log:', error);
     } else {
-      console.log(`✅ Log created: ${action} for user ${userId}`);
+      console.log(` Log created: ${action} for user ${userId}`);
     }
   } catch (error) {
-    console.error('❌ Error creating log:', error);
+    console.error(' Error creating log:', error);
     // Ne pas faire échouer l'opération principale si le logging échoue
   }
 }

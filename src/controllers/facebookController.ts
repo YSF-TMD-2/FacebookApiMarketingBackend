@@ -32,20 +32,43 @@ async function createLog(userId: string, action: string, details: any) {
 
 // Fonction utilitaire pour récupérer le token Facebook
 export async function getFacebookToken(userId: string): Promise<FacebookToken> {
+    console.log(`🔍 [getFacebookToken] Fetching token for userId: ${userId}`);
+    
     const { data: tokenRow, error: tokenError } = await supabase
         .from('access_tokens')
         .select('*')
         .eq('userId', userId)
         .single();
     
-    if (tokenError && tokenError.code !== 'PGRST116') {
-        console.error('Database error in getFacebookToken:', tokenError);
-        throw new Error('Database error');
+    if (tokenError) {
+        console.error(`❌ [getFacebookToken] Database error for userId ${userId}:`, {
+            code: tokenError.code,
+            message: tokenError.message,
+            details: tokenError.details,
+            hint: tokenError.hint
+        });
+        
+        if (tokenError.code !== 'PGRST116') {
+            throw new Error(`Database error: ${tokenError.message}`);
+        } else {
+            // PGRST116 = no rows found
+            console.error(`❌ [getFacebookToken] No token found for userId: ${userId}`);
+            throw new Error('No access token found');
+        }
     }
 
     if (!tokenRow) {
+        console.error(`❌ [getFacebookToken] Token row is null for userId: ${userId}`);
         throw new Error('No access token found');
     }
+
+    console.log(`✅ [getFacebookToken] Token found for userId ${userId}:`, {
+        id: tokenRow.id,
+        userId: tokenRow.userId,
+        tokenLength: tokenRow.token?.length || 0,
+        hasToken: !!tokenRow.token,
+        tokenPreview: tokenRow.token ? `${tokenRow.token.substring(0, 10)}...` : 'null'
+    });
 
     return tokenRow;
 }

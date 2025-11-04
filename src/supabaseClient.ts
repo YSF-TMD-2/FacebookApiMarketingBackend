@@ -11,78 +11,216 @@ export interface Database {
       access_tokens: {
         Row: {
           id: number;
-          userId: string;
+          user_id: string;
           token: string;
           scopes: string | null;
           meta: any | null;
+          created_at: string;
+          updated_at: string;
         };
         Insert: {
           id?: number;
-          userId: string;
+          user_id: string;
           token: string;
           scopes?: string | null;
           meta?: any | null;
+          created_at?: string;
+          updated_at?: string;
         };
         Update: {
           id?: number;
-          userId?: string;
+          user_id?: string;
           token?: string;
           scopes?: string | null;
           meta?: any | null;
+          created_at?: string;
+          updated_at?: string;
         };
       };
       logs: {
         Row: {
           id: number;
-          userId: string;
+          user_id: string;
           action: string;
           details: any | null;
           ip: string | null;
-          userAgent: string | null;
+          user_agent: string | null;
+          created_at: string;
         };
         Insert: {
           id?: number;
-          userId: string;
+          user_id: string;
           action: string;
           details?: any | null;
           ip?: string | null;
-          userAgent?: string | null;
+          user_agent?: string | null;
+          created_at?: string;
         };
         Update: {
           id?: number;
-          userId?: string;
+          user_id?: string;
           action?: string;
           details?: any | null;
           ip?: string | null;
-          userAgent?: string | null;
+          user_agent?: string | null;
+          created_at?: string;
         };
       };
-               thresholds: {
-                 Row: {
-                   id: number;
-                   user_id: string;
-                   cost_per_result_threshold: number;
-                   zero_results_spend_threshold: number;
-                   created_at: string;
-                   updated_at: string;
-                 };
-                 Insert: {
-                   id?: number;
-                   user_id: string;
-                   cost_per_result_threshold: number;
-                   zero_results_spend_threshold: number;
-                   created_at?: string;
-                   updated_at?: string;
-                 };
-                 Update: {
-                   id?: number;
-                   user_id?: string;
-                   cost_per_result_threshold?: number;
-                   zero_results_spend_threshold?: number;
-                   created_at?: string;
-                   updated_at?: string;
-                 };
-               };
+      thresholds: {
+        Row: {
+          id: number;
+          user_id: string;
+          cost_per_result_threshold: number;
+          zero_results_spend_threshold: number;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: number;
+          user_id: string;
+          cost_per_result_threshold: number;
+          zero_results_spend_threshold: number;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: number;
+          user_id?: string;
+          cost_per_result_threshold?: number;
+          zero_results_spend_threshold?: number;
+          created_at?: string;
+          updated_at?: string;
+        };
+      };
+      stop_loss_settings: {
+        Row: {
+          id: number;
+          user_id: string;
+          ad_id: string;
+          account_id: string;
+          ad_name: string | null;
+          enabled: boolean;
+          cost_per_result_threshold: number | null;
+          zero_results_spend_threshold: number | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: number;
+          user_id: string;
+          ad_id: string;
+          account_id: string;
+          ad_name?: string | null;
+          enabled?: boolean;
+          cost_per_result_threshold?: number | null;
+          zero_results_spend_threshold?: number | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: number;
+          user_id?: string;
+          ad_id?: string;
+          account_id?: string;
+          ad_name?: string | null;
+          enabled?: boolean;
+          cost_per_result_threshold?: number | null;
+          zero_results_spend_threshold?: number | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+      };
+      notifications: {
+        Row: {
+          id: number;
+          user_id: string;
+          type: string;
+          title: string;
+          message: string;
+          data: any | null;
+          is_read: boolean;
+          created_at: string;
+        };
+        Insert: {
+          id?: number;
+          user_id: string;
+          type: string;
+          title: string;
+          message: string;
+          data?: any | null;
+          is_read?: boolean;
+          created_at?: string;
+        };
+        Update: {
+          id?: number;
+          user_id?: string;
+          type?: string;
+          title?: string;
+          message?: string;
+          data?: any | null;
+          is_read?: boolean;
+          created_at?: string;
+        };
+      };
+      ads: {
+        Row: {
+          id: string;
+          user_id: string;
+          account_id: string;
+          name: string | null;
+          status: string;
+          spend: number;
+          results: number;
+          stop_loss_triggered: boolean;
+          stop_loss_date: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id: string;
+          user_id: string;
+          account_id: string;
+          name?: string | null;
+          status?: string;
+          spend?: number;
+          results?: number;
+          stop_loss_triggered?: boolean;
+          stop_loss_date?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          user_id?: string;
+          account_id?: string;
+          name?: string | null;
+          status?: string;
+          spend?: number;
+          results?: number;
+          stop_loss_triggered?: boolean;
+          stop_loss_date?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+      };
+    };
+    Functions: {
+      create_stop_loss_event: {
+        Args: {
+          p_user_id: string;
+          p_ad_id: string;
+          p_account_id: string;
+          p_ad_name: string;
+          p_event_type: string;
+          p_spend: number;
+          p_results: number;
+          p_cost_per_result: number;
+          p_threshold_type: string;
+          p_threshold_value: number;
+          p_metadata: any;
+        };
+        Returns: void;
+      };
     };
   };
 }
@@ -132,3 +270,24 @@ export interface AuthSession {
   token_type: string;
   user: UserProfile;
 }
+
+// Types pour les actions de log
+export type LogAction = 
+  | 'USER_LOGIN'
+  | 'USER_LOGOUT'
+  | 'USER_REGISTER'
+  | 'TOKEN_SAVED'
+  | 'TOKEN_UPDATED'
+  | 'TOKEN_DELETED'
+  | 'AD_CREATED'
+  | 'AD_UPDATED'
+  | 'AD_DELETED'
+  | 'AD_PAUSED'
+  | 'AD_RESUMED'
+  | 'STOP_LOSS_CONFIG'
+  | 'STOP_LOSS_DELETED'
+  | 'STOP_LOSS_TRIGGERED'
+  | 'THRESHOLDS_UPDATED'
+  | 'THRESHOLDS_RESET'
+  | 'API_CALL'
+  | 'ERROR_OCCURRED';

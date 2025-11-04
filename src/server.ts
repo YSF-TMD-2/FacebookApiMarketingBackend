@@ -5,22 +5,25 @@ import authRoutes from "./routes/authRoutes.js";
 import facebookRoutes from "./routes/facebookRoutes.js";
 import scheduleRoutes from "./routes/scheduleRoutes.js";
 import stopLossRoutes from "./routes/stopLossRoutes.js";
+import myStopLossRoutes from "./routes/myStopLossRoutes.js";
 import logsRoutes from "./routes/logsRoutes.js";
 import notificationRoutes from "./routes/notificationRoutes.js";
+import adminRoutes from "./routes/adminRoutes.js";
 import { startScheduleService } from "./controllers/scheduleController.js";
 import { startStopLossService } from "./controllers/stopLossController.js";
+import { optimizedStopLossService } from "./services/optimizedStopLossService.js";
 
 dotenv.config();
 
 
 const app = express();
 
-// 🔐 CORS — Configuration générale pour Vercel avec pattern regex
+// CORS — Configuration générale pour Vercel avec pattern regex
 const isAllowedUrl = (origin: string): boolean => {
-  // Patterns pour détecter automatiquement les URLs autorisées
-  const patterns = [
-    // Vercel - pattern très général pour capturer toutes les URLs Vercel
-    /^https:\/\/[a-zA-Z0-9-]+\.vercel\.app$/,
+    // Patterns pour détecter automatiquement les URLs autorisées
+    const patterns: (string | RegExp)[] = [
+      // Vercel - pattern très général pour capturer toutes les URLs Vercel
+      /^https:\/\/[a-zA-Z0-9-]+\.vercel\.app$/,
     
     // Pattern spécifique pour les URLs avec format projects
     /^https:\/\/frontend-[a-zA-Z0-9-]+-youssefs-projects-[a-zA-Z0-9-]+\.vercel\.app$/,
@@ -43,7 +46,9 @@ const isAllowedUrl = (origin: string): boolean => {
     /^https?:\/\/10\.\d+\.\d+\.\d+(:\d+)?$/,
   ];
   
-  return patterns.some(pattern => pattern.test(origin));
+  return patterns.some(pattern => 
+    typeof pattern === 'string' ? pattern === origin : pattern.test(origin)
+  );
 };
 
 // Fonction utilitaire pour construire les URLs d'insights avec support des paramètres de date
@@ -2198,223 +2203,24 @@ app.get("/api/facebook/status", async (req, res) => {
   }
 });
 
-// 🔍 Endpoint de diagnostic CORS spécifique
-app.get("/api/cors-diagnostic", (req, res) => {
-  const origin = req.headers.origin;
-  
-  // Headers CORS explicites
-  res.header('Access-Control-Allow-Origin', origin || '*');
-  res.header('Access-Control-Allow-Credentials', 'true');
-  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, Accept, Origin');
-  
-  const isAllowed = isAllowedUrl(origin || '');
-  
-  res.json({
-    message: "🔍 CORS Diagnostic",
-    origin: origin,
-    isAllowed: isAllowed,
-    timestamp: new Date().toISOString(),
-    patterns: [
-      'Vercel: /^https:\\/\\/[a-zA-Z0-9-]+\\.vercel\\.app$/',
-      'Netlify: /^https:\\/\\/[a-zA-Z0-9-]+\\.netlify\\.app$/',
-      'GitHub: /^https:\\/\\/[a-zA-Z0-9-]+\\.github\\.io$/',
-      'Heroku: /^https:\\/\\/[a-zA-Z0-9-]+\\.herokuapp\\.com$/'
-    ],
-    cors: {
-      allowed: isAllowed,
-      headers: {
-        'Access-Control-Allow-Origin': origin || '*',
-        'Access-Control-Allow-Credentials': 'true'
-      }
-    }
-  });
-});
 
-// 🔍 Diagnostic endpoint pour vérifier la configuration
-app.get("/api/diagnostic", async (_req, res) => {
-  try {
-    // Test de connexion Supabase
-    const { supabase } = await import("./supabaseClient.js");
-    const { data, error } = await supabase.from('logs').select('count').limit(1);
-    
-    res.json({
-      message: "🔍 Diagnostic de la configuration Supabase",
-      environment: {
-        SUPABASE_URL: process.env.SUPABASE_URL ? "✅ Configuré" : "❌ Manquant",
-        SUPABASE_SERVICE_ROLE_KEY: process.env.SUPABASE_SERVICE_ROLE_KEY ? "✅ Configuré" : "❌ Manquant",
-        NODE_ENV: process.env.NODE_ENV,
-        VERCEL: process.env.VERCEL ? "✅ Oui" : "❌ Non"
-      },
-      supabase: {
-        url: process.env.SUPABASE_URL || "Non configuré",
-        hasServiceKey: !!process.env.SUPABASE_SERVICE_ROLE_KEY,
-        connection: error ? `❌ Erreur: ${error.message}` : "✅ Connecté"
-      },
-      network: {
-        status: "✅ OK",
-        timestamp: new Date().toISOString()
-      }
-    });
-  } catch (networkError: any) {
-    res.status(500).json({
-      message: "❌ Erreur de connexion réseau",
-      error: networkError.message,
-      timestamp: new Date().toISOString()
-    });
-  }
-});
 
-// 🚀 Routes principales
+//  Routes principales
 app.use("/api/auth", authRoutes);
 app.use("/api/facebook", facebookRoutes);
 app.use("/api/schedules", scheduleRoutes);
 app.use("/api/stop-loss", stopLossRoutes);
+app.use("/api/my-stop-loss", myStopLossRoutes);
 app.use("/api/logs", logsRoutes);
 app.use("/api/notifications", notificationRoutes);
+app.use("/api/admin", adminRoutes);
 
-// Import du service thresholds
-import { ThresholdsService } from './services/thresholdsService.js';
-
-// 🛑 Endpoints pour la gestion des thresholds
-app.get("/api/thresholds", async (req, res) => {
-  try {
-    const authHeader = req.headers.authorization;
-    const token = authHeader ? authHeader.replace('Bearer ', '') : null;
-    
-    if (!token) {
-      return res.status(401).json({ 
-        message: "No access token provided", 
-        success: false 
-      });
-    }
-
-    // Décoder le JWT pour obtenir l'userId
-    let userId = null;
-    try {
-      const payload = JSON.parse(Buffer.from(token.split('.')[1], 'base64').toString());
-      userId = payload.sub;
-    } catch (error) {
-      return res.status(401).json({ message: "Invalid token", success: false });
-    }
-
-    const thresholds = await ThresholdsService.getUserThresholds(userId);
-    
-    res.json({
-      success: true,
-      data: thresholds
-    });
-  } catch (error: any) {
-    console.error('❌ Error getting thresholds:', error);
-    res.status(500).json({
-      success: false,
-      message: "Error retrieving thresholds"
-    });
-  }
-});
-
-app.post("/api/thresholds", async (req, res) => {
-  try {
-    const authHeader = req.headers.authorization;
-    const token = authHeader ? authHeader.replace('Bearer ', '') : null;
-    
-    if (!token) {
-      return res.status(401).json({ 
-        message: "No access token provided", 
-        success: false 
-      });
-    }
-
-    // Décoder le JWT pour obtenir l'userId
-    let userId = null;
-    try {
-      const payload = JSON.parse(Buffer.from(token.split('.')[1], 'base64').toString());
-      userId = payload.sub;
-    } catch (error) {
-      return res.status(401).json({ message: "Invalid token", success: false });
-    }
-
-    const { costPerResultThreshold, zeroResultsSpendThreshold } = req.body;
-
-    if (typeof costPerResultThreshold !== 'number' || typeof zeroResultsSpendThreshold !== 'number') {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid threshold values"
-      });
-    }
-
-    const success = await ThresholdsService.saveUserThresholds(userId, {
-      costPerResultThreshold,
-      zeroResultsSpendThreshold
-    });
-
-    if (success) {
-      res.json({
-        success: true,
-        message: "Thresholds saved successfully"
-      });
-    } else {
-      res.status(500).json({
-        success: false,
-        message: "Error saving thresholds"
-      });
-    }
-  } catch (error: any) {
-    console.error('❌ Error saving thresholds:', error);
-    res.status(500).json({
-      success: false,
-      message: "Error saving thresholds"
-    });
-  }
-});
-
-app.delete("/api/thresholds", async (req, res) => {
-  try {
-    const authHeader = req.headers.authorization;
-    const token = authHeader ? authHeader.replace('Bearer ', '') : null;
-    
-    if (!token) {
-      return res.status(401).json({ 
-        message: "No access token provided", 
-        success: false 
-      });
-    }
-
-    // Décoder le JWT pour obtenir l'userId
-    let userId = null;
-    try {
-      const payload = JSON.parse(Buffer.from(token.split('.')[1], 'base64').toString());
-      userId = payload.sub;
-    } catch (error) {
-      return res.status(401).json({ message: "Invalid token", success: false });
-    }
-
-    const success = await ThresholdsService.resetUserThresholds(userId);
-
-    if (success) {
-      res.json({
-        success: true,
-        message: "Thresholds reset to default"
-      });
-    } else {
-      res.status(500).json({
-        success: false,
-        message: "Error resetting thresholds"
-      });
-    }
-  } catch (error: any) {
-    console.error('❌ Error resetting thresholds:', error);
-    res.status(500).json({
-      success: false,
-      message: "Error resetting thresholds"
-    });
-  }
-});
 
 
 
 // 🚀 Démarrage du serveur
 const PORT = process.env.PORT || 5000;
+
 app.listen(PORT, () => {
   console.log(`✅ Server running at http://localhost:${PORT}`);
   
@@ -2422,5 +2228,11 @@ app.listen(PORT, () => {
   console.log('🚀 Starting background services...');
   startScheduleService();
   startStopLossService();
+  
+  // Démarrer le service stop-loss optimisé (utilise Meta Batch API)
+  optimizedStopLossService.initialize().catch(err => {
+    console.error('❌ Error initializing optimized stop-loss service:', err);
+  });
+  
   console.log('✅ All background services started');
 });

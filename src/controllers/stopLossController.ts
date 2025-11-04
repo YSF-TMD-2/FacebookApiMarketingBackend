@@ -1,109 +1,111 @@
 import { Request, Response } from "../types/express.js";
 import { getFacebookToken, fetchFbGraph } from "./facebookController.js";
 import { createLog } from "../services/loggerService.js";
-
-// Interface pour les configurations de stop loss
-interface StopLossConfig {
-    adId: string;
-    condition: 'spend' | 'cpc' | 'cpl' | 'cpa';
-    threshold: number;
-    action: 'pause' | 'delete';
-    enabled: boolean;
-    createdAt: Date;
-    userId: string;
-}
-
-// Stockage temporaire des configurations stop loss (en production, utiliser une base de données)
-const stopLossConfigs: Map<string, StopLossConfig[]> = new Map();
+import { StopLossSettingsService } from "../services/stopLossSettingsService.js";
 
 // Configurer le stop loss pour une ad
 export async function configureStopLoss(req: Request, res: Response) {
     try {
-        const userId = req.user!.id;
+        console.log('🔍 Stop loss request received');
+        console.log('🔍 User:', req.user);
+        console.log('🔍 Params:', req.params);
+        console.log('🔍 Body:', req.body);
+        
+        if (!req.user) {
+            return res.status(401).json({
+                success: false,
+                message: "User not authenticated"
+            });
+        }
+
+        const userId = req.user.id;
         const { adId } = req.params;
-        const { condition, threshold, action } = req.body;
+        const { costPerResult, zeroResultsSpend, enabled } = req.body;
 
-        console.log('🔍 Configuring stop loss for ad:', adId, 'Condition:', condition, 'Threshold:', threshold);
+        console.log('🔍 Configuring stop loss for ad:', adId, 'CPR:', costPerResult, 'Zero Results Spend:', zeroResultsSpend, 'Enabled:', enabled);
+        console.log('🔍 Full request body:', req.body);
 
-        // Valider les paramètres
-        if (!condition || threshold === undefined || !action) {
-            return res.status(400).json({
-                success: false,
-                message: "Missing required parameters: condition, threshold, action"
-            });
-        }
-
-        if (!['spend', 'cpc', 'cpl', 'cpa'].includes(condition)) {
-            return res.status(400).json({
-                success: false,
-                message: "Invalid condition. Must be one of: spend, cpc, cpl, cpa"
-            });
-        }
-
-        if (!['pause', 'delete'].includes(action)) {
-            return res.status(400).json({
-                success: false,
-                message: "Invalid action. Must be one of: pause, delete"
-            });
-        }
-
-        // Récupérer le token Facebook
+        // Récupérer le token Facebook pour obtenir les détails de l'ad
         const tokenRow = await getFacebookToken(userId);
 
         // Récupérer les détails de l'ad pour logging
         let adDetails = null;
+        let accountId = null;
         try {
-            const adResponse = await fetchFbGraph(tokenRow.token, `${adId}?fields=id,name,status,adset_id`);
+            const adResponse = await fetchFbGraph(tokenRow.token, `${adId}?fields=id,name,status,adset_id,account_id`);
             adDetails = adResponse;
+            accountId = adResponse.account_id;
         } catch (error) {
             console.log('⚠️ Could not fetch ad details:', error);
+            return res.status(400).json({
+                success: false,
+                message: "Could not fetch ad details. Please check if the ad ID is valid."
+            });
         }
 
-        // Créer la configuration stop loss
-        const stopLossConfig: StopLossConfig = {
+        // Si enabled est false, désactiver le stop loss (pas besoin de seuils)
+        if (enabled === false) {
+            const result = await StopLossSettingsService.disableStopLoss(userId, adId);
+            if (!result.success) {
+                return res.status(500).json({
+                    success: false,
+                    message: result.error || "Failed to disable stop loss"
+                });
+            }
+            await createLog(userId, "STOP_LOSS_CONFIG", {
+                adId,
+                adName: adDetails?.name || 'Unknown',
+                enabled: false
+            });
+            return res.json({
+                success: true,
+                message: "Stop loss disabled successfully"
+            });
+        }
+
+        // Valider les paramètres (seulement si on active)
+        if ((costPerResult === undefined || costPerResult === null) && (zeroResultsSpend === undefined || zeroResultsSpend === null)) {
+            return res.status(400).json({
+                success: false,
+                message: "At least one threshold must be provided: costPerResult or zeroResultsSpend"
+            });
+        }
+
+        // Utiliser le service pour configurer le stop loss en base de données
+        const result = await StopLossSettingsService.enableStopLoss(
+            userId,
             adId,
-            condition,
-            threshold,
-            action,
-            enabled: true,
-            createdAt: new Date(),
-            userId
-        };
+            accountId,
+            adDetails?.name,
+            {
+                costPerResult: costPerResult || null,
+                zeroResultsSpend: zeroResultsSpend || null
+            },
+            enabled !== undefined ? enabled : true
+        );
 
-        // Stocker la configuration (en production, sauvegarder en base de données)
-        if (!stopLossConfigs.has(userId)) {
-            stopLossConfigs.set(userId, []);
+        if (!result.success) {
+            return res.status(500).json({
+                success: false,
+                message: result.error || "Failed to configure stop loss"
+            });
         }
-
-        // Supprimer l'ancienne configuration pour cette ad si elle existe
-        const userConfigs = stopLossConfigs.get(userId)!;
-        const filteredConfigs = userConfigs.filter(config => config.adId !== adId);
-        
-        // Ajouter la nouvelle configuration
-        filteredConfigs.push(stopLossConfig);
-        stopLossConfigs.set(userId, filteredConfigs);
 
         // Log de création
         await createLog(userId, "STOP_LOSS_CONFIG", {
             adId,
             adName: adDetails?.name || 'Unknown',
-            condition,
-            threshold,
-            action
+            costPerResult,
+            zeroResultsSpend,
+            enabled
         });
 
-        console.log('✅ Stop loss configuration created successfully for ad:', adId);
+        console.log('Stop loss configuration created successfully for ad:', adId);
 
         return res.json({
             success: true,
             message: "Stop loss configuration saved successfully",
-            data: {
-                adId,
-                condition,
-                threshold,
-                action,
-                enabled: true
-            }
+            data: result.data
         });
 
     } catch (error: any) {
@@ -120,15 +122,56 @@ export async function configureStopLoss(req: Request, res: Response) {
 export async function getStopLossConfigs(req: Request, res: Response) {
     try {
         const userId = req.user!.id;
-        const userConfigs = stopLossConfigs.get(userId) || [];
+        
+        const result = await StopLossSettingsService.getEnabledStopLossAds(userId);
+        
+        if (!result.success) {
+            return res.status(500).json({
+                success: false,
+                message: result.error || "Failed to fetch stop loss configurations"
+            });
+        }
 
         return res.json({
             success: true,
-            data: userConfigs
+            data: result.data || []
         });
 
     } catch (error: any) {
         console.error('❌ Error fetching stop loss configs:', error);
+        return res.status(500).json({
+            success: false,
+            message: error.message || "Server error"
+        });
+    }
+}
+
+// Récupérer la configuration stop loss d'une ad spécifique
+export async function getStopLossConfig(req: Request, res: Response) {
+    try {
+        const userId = req.user!.id;
+        const { adId } = req.params;
+
+        const result = await StopLossSettingsService.getStopLossStatus(userId, adId);
+        
+        if (!result.success) {
+            return res.status(500).json({
+                success: false,
+                message: result.error || "Failed to fetch stop loss configuration"
+            });
+        }
+
+        return res.json({
+            success: true,
+            data: result.data || {
+                enabled: false,
+                cost_per_result_threshold: 1.50,
+                zero_results_spend_threshold: 1.50
+            }
+        });
+
+    } catch (error: any) {
+        console.error('❌ Error fetching stop loss config:', error);
         return res.status(500).json({
             success: false,
             message: error.message || "Server error"
@@ -142,10 +185,14 @@ export async function deleteStopLossConfig(req: Request, res: Response) {
         const userId = req.user!.id;
         const { adId } = req.params;
 
-        const userConfigs = stopLossConfigs.get(userId) || [];
-        const filteredConfigs = userConfigs.filter(config => config.adId !== adId);
-
-        stopLossConfigs.set(userId, filteredConfigs);
+        const result = await StopLossSettingsService.disableStopLoss(userId, adId);
+        
+        if (!result.success) {
+            return res.status(500).json({
+                success: false,
+                message: result.error || "Failed to delete stop loss configuration"
+            });
+        }
 
         await createLog(userId, "STOP_LOSS_DELETED", { adId });
 
@@ -166,108 +213,111 @@ export async function deleteStopLossConfig(req: Request, res: Response) {
 // Surveiller les métriques et exécuter les actions stop loss
 export async function monitorStopLoss() {
     try {
-        // Vérifier s'il y a des configurations actives
-        let hasActiveConfigs = false;
-        for (const [userId, userConfigs] of stopLossConfigs.entries()) {
-            if (userConfigs.some(config => config.enabled)) {
-                hasActiveConfigs = true;
-                break;
-            }
-        }
+        console.log('🔍 Monitoring stop loss conditions...');
         
-        // Ne logger que s'il y a des configurations actives
-        if (hasActiveConfigs) {
-            console.log('🔍 Monitoring stop loss conditions...');
+        // Récupérer toutes les configurations actives depuis la base de données
+        const { supabase } = await import('../supabaseClient.js');
+        const { data: activeConfigs, error } = await supabase
+            .from('stop_loss_settings')
+            .select('*')
+            .eq('enabled', true);
+
+        if (error) {
+            console.error('❌ Error fetching active stop loss configs:', error);
+            return;
         }
-        
-        for (const [userId, userConfigs] of stopLossConfigs.entries()) {
-            for (const config of userConfigs) {
-                if (!config.enabled) continue;
 
-                try {
-                    // Récupérer le token Facebook
-                    const tokenRow = await getFacebookToken(userId);
-                    
-                    // Récupérer les métriques de l'ad pour les dernières 24h
-                    const insightsResponse = await fetchFbGraph(
-                        tokenRow.token, 
-                        `${config.adId}/insights?fields=spend,impressions,clicks,conversions,cpc&date_preset=yesterday`
-                    );
-                    
-                    const insights = insightsResponse.data?.[0];
-                    if (!insights) continue;
+        if (!activeConfigs || activeConfigs.length === 0) {
+            console.log('📊 No active stop loss configurations found');
+            return;
+        }
 
-                    let currentValue = 0;
-                    let shouldTrigger = false;
+        console.log(`📊 Monitoring ${activeConfigs.length} active stop loss configurations`);
 
-                    // Calculer la valeur actuelle selon la condition
-                    switch (config.condition) {
-                        case 'spend':
-                            currentValue = parseFloat(insights.spend || 0);
-                            shouldTrigger = currentValue >= config.threshold;
-                            break;
-                        case 'cpc':
-                            currentValue = parseFloat(insights.cpc || 0);
-                            shouldTrigger = currentValue >= config.threshold;
-                            break;
-                        case 'cpl':
-                            const clicks = parseInt(insights.clicks || 0);
-                            const conversions = parseInt(insights.conversions || 0);
-                            currentValue = clicks > 0 ? parseFloat(insights.spend || 0) / conversions : 0;
-                            shouldTrigger = currentValue >= config.threshold;
-                            break;
-                        case 'cpa':
-                            const conversionsForCpa = parseInt(insights.conversions || 0);
-                            currentValue = conversionsForCpa > 0 ? parseFloat(insights.spend || 0) / conversionsForCpa : 0;
-                            shouldTrigger = currentValue >= config.threshold;
-                            break;
-                    }
+        for (const config of activeConfigs) {
+            try {
+                // Récupérer le token Facebook
+                const tokenRow = await getFacebookToken(config.user_id);
+                
+                // Récupérer les métriques de l'ad pour aujourd'hui
+                const insightsResponse = await fetchFbGraph(
+                    tokenRow.token, 
+                    `${config.ad_id}/insights?fields=spend,actions&date_preset=today`
+                );
+                
+                const insights = insightsResponse.data?.[0];
+                if (!insights) continue;
 
-                    // Si le seuil est atteint, exécuter l'action
-                    if (shouldTrigger) {
-                        console.log(`🚨 Stop loss triggered for ad ${config.adId}: ${config.condition} = ${currentValue} >= ${config.threshold}`);
-                        
-                        let newStatus = 'PAUSED';
-                        if (config.action === 'delete') {
-                            newStatus = 'DELETED';
+                const spend = parseFloat(insights.spend || 0);
+                let results = 0;
+                
+                // Compter les résultats depuis les actions
+                if (insights.actions && Array.isArray(insights.actions)) {
+                    results = insights.actions.reduce((total: number, action: any) => {
+                        if (action.action_type === 'lead' || action.action_type === 'purchase' || action.action_type === 'conversion') {
+                            return total + parseInt(action.value || 0);
                         }
-
-                        // Appeler l'API Facebook pour changer le statut
-                        const response = await fetch(`https://graph.facebook.com/v18.0/${config.adId}`, {
-                            method: 'POST',
-                            headers: {
-                                'Content-Type': 'application/json',
-                            },
-                            body: JSON.stringify({
-                                status: newStatus,
-                                access_token: tokenRow.token
-                            })
-                        });
-
-                        if (response.ok) {
-                            console.log(`✅ Stop loss action executed for ad ${config.adId}: ${config.action}`);
-                            
-                            // Log de l'exécution
-                            await createLog(userId, "STOP_LOSS_TRIGGERED", {
-                                adId: config.adId,
-                                condition: config.condition,
-                                threshold: config.threshold,
-                                currentValue,
-                                action: config.action,
-                                newStatus,
-                                triggeredAt: new Date().toISOString()
-                            });
-
-                            // Désactiver la configuration après exécution
-                            config.enabled = false;
-                        } else {
-                            console.error(`❌ Failed to execute stop loss action for ad ${config.adId}`);
-                        }
-                    }
-
-                } catch (error) {
-                    console.error(`❌ Error monitoring stop loss for ad ${config.adId}:`, error);
+                        return total;
+                    }, 0);
                 }
+
+                console.log(`🔍 Checking ad ${config.ad_id}: spend=$${spend}, results=${results}`);
+
+                let shouldTrigger = false;
+                let triggerReason = '';
+
+                // Vérifier les conditions de stop loss
+                if (config.cost_per_result_threshold && results > 0) {
+                    const costPerResult = spend / results;
+                    if (costPerResult >= config.cost_per_result_threshold) {
+                        shouldTrigger = true;
+                        triggerReason = `Cost per result ($${costPerResult.toFixed(2)}) exceeded threshold ($${config.cost_per_result_threshold})`;
+                    }
+                }
+
+                if (config.zero_results_spend_threshold && results === 0 && spend >= config.zero_results_spend_threshold) {
+                    shouldTrigger = true;
+                    triggerReason = `Zero results spend ($${spend}) exceeded threshold ($${config.zero_results_spend_threshold})`;
+                }
+
+                // Si le seuil est atteint, exécuter l'action
+                if (shouldTrigger) {
+                    console.log(`🚨 Stop loss triggered for ad ${config.ad_id}: ${triggerReason}`);
+                    
+                    // Mettre en pause l'annonce
+                    const response = await fetch(`https://graph.facebook.com/v18.0/${config.ad_id}`, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify({
+                            status: 'PAUSED',
+                            access_token: tokenRow.token
+                        })
+                    });
+
+                    if (response.ok) {
+                        console.log(`✅ Ad ${config.ad_id} paused due to stop loss`);
+                        
+                        // Désactiver la configuration après exécution
+                        await StopLossSettingsService.disableStopLoss(config.user_id, config.ad_id);
+                        
+                        // Log de l'exécution
+                        await createLog(config.user_id, "STOP_LOSS_TRIGGERED", {
+                            adId: config.ad_id,
+                            adName: config.ad_name,
+                            reason: triggerReason,
+                            spend,
+                            results,
+                            triggeredAt: new Date().toISOString()
+                        });
+                    } else {
+                        console.error(`❌ Failed to pause ad ${config.ad_id}`);
+                    }
+                }
+
+            } catch (error) {
+                console.error(`❌ Error monitoring stop loss for ad ${config.ad_id}:`, error);
             }
         }
 

@@ -2,7 +2,6 @@ import { Request, Response } from "../types/express.js";
 import { getFacebookToken, fetchFbGraph } from "./facebookController.js";
 import { createLog } from "../services/loggerService.js";
 import { supabase } from "../supabaseClient.js";
-import { ThresholdsService } from "../services/thresholdsService.js";
 
 // Interface pour les données de schedule
 interface ScheduleData {
@@ -1198,24 +1197,51 @@ export async function checkStopLossConditions(userId: string, adId: string): Pro
         
         console.log(`🔍 Stop loss check for ad ${adId}: spend=$${spend}, results=${results}`);
         
-        // Vérifier les conditions de stop loss
-        const stopLossResult = await ThresholdsService.shouldStopAd(userId, spend, results);
-        
-        if (stopLossResult.shouldStop) {
-            console.log(`🛑 STOP LOSS TRIGGERED for ad ${adId}: ${stopLossResult.reason}`);
-            
-            // Logger l'action de stop loss
-            await createLog(userId, 'STOP_LOSS_TRIGGERED', {
-                adId,
-                spend,
-                results,
-                reason: stopLossResult.reason,
-                threshold: stopLossResult.threshold,
-                timestamp: new Date().toISOString()
-            });
+        // Vérifier les conditions de stop loss pour cette ad spécifique
+        const { data: stopLossConfig } = await supabase
+            .from('stop_loss_settings')
+            .select('*')
+            .eq('user_id', userId)
+            .eq('ad_id', adId)
+            .eq('enabled', true)
+            .single();
+
+        if (stopLossConfig) {
+            let shouldStop = false;
+            let reason = '';
+
+            // Vérifier le cost per result si il y a des résultats
+            if (results > 0 && stopLossConfig.cost_per_result_threshold) {
+                const costPerResult = spend / results;
+                if (costPerResult >= stopLossConfig.cost_per_result_threshold) {
+                    shouldStop = true;
+                    reason = `Cost per result ($${costPerResult.toFixed(2)}) exceeds threshold ($${stopLossConfig.cost_per_result_threshold})`;
+                }
+            }
+            // Vérifier le zero results spend si il n'y a pas de résultats
+            else if (results === 0 && stopLossConfig.zero_results_spend_threshold) {
+                if (spend >= stopLossConfig.zero_results_spend_threshold) {
+                    shouldStop = true;
+                    reason = `Ad spend ($${spend.toFixed(2)}) exceeds zero results threshold ($${stopLossConfig.zero_results_spend_threshold})`;
+                }
+            }
+
+            if (shouldStop) {
+                console.log(`🛑 STOP LOSS TRIGGERED for ad ${adId}: ${reason}`);
+                
+                // Logger l'action de stop loss
+                await createLog(userId, 'STOP_LOSS_TRIGGERED', {
+                    adId,
+                    spend,
+                    results,
+                    reason,
+                    threshold: stopLossConfig.cost_per_result_threshold || stopLossConfig.zero_results_spend_threshold,
+                    timestamp: new Date().toISOString()
+                });
+            }
         }
         
-        return stopLossResult;
+        return { shouldStop: false };
     } catch (error) {
         console.error('❌ Error checking stop loss conditions:', error);
         return { shouldStop: false };

@@ -30,7 +30,7 @@ const protect = async (req: AuthRequest, res: Response, next: NextFunction) => {
                 // Vérifier d'abord si la session existe
                 const sessionResult = await supabase.auth.getSession();
                 if (sessionResult.error) {
-                    console.log("🔍 No active session found, trying to verify token directly...");
+                    console.log(" No active session found, trying to verify token directly...");
                 }
                 
                 const result = await supabase.auth.getUser(token);
@@ -42,7 +42,7 @@ const protect = async (req: AuthRequest, res: Response, next: NextFunction) => {
                 // Gestion spéciale des erreurs de session
                 if (error.message?.includes('Auth session missing') || 
                     error.message?.includes('AuthSessionMissingError')) {
-                    console.log("🔐 Auth session missing, token might be expired");
+                    console.log("Auth session missing, token might be expired");
                     return res.status(401).json({ 
                         message: "Session expired. Please log in again.",
                         code: "SESSION_EXPIRED"
