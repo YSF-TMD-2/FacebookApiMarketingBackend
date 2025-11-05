@@ -204,7 +204,7 @@ export class AdminSystemSettingsService {
         .select('user_id, account_id, quota_usage_percent, updated_at');
 
       if (quotaError) {
-        console.warn('⚠️ Error fetching quota data:', quotaError);
+        console.warn(' Error fetching quota data:', quotaError);
       }
 
       // Calculer le quota max par utilisateur
@@ -222,9 +222,9 @@ export class AdminSystemSettingsService {
       if (batchConfigError) {
         // Si la table n'existe pas, continuer sans configs personnalisées
         if (batchConfigError.code === 'PGRST205' || batchConfigError.message?.includes('Could not find the table')) {
-          console.warn('⚠️ Table user_batch_config does not exist. Using default configs. Please run: backend/create-user-batch-config-table.sql');
+          console.warn('Table user_batch_config does not exist. Using default configs. Please run: backend/create-user-batch-config-table.sql');
         } else {
-          console.warn('⚠️ Error fetching batch configs:', batchConfigError);
+          console.warn('Error fetching batch configs:', batchConfigError);
         }
       }
 
@@ -381,6 +381,25 @@ export class AdminSystemSettingsService {
     config: { batch_interval_ms?: number; enabled?: boolean; max_parallel_requests?: number }
   ): Promise<{ success: boolean; error?: string; data?: any }> {
     try {
+      // Si on essaie d'activer le batch, vérifier qu'il y a au moins un ad avec stop-loss configuré
+      if (config.enabled === true) {
+        const { data: stopLossAds, error: stopLossError } = await supabase
+          .from('stop_loss_settings')
+          .select('id')
+          .eq('user_id', userId)
+          .eq('enabled', true);
+
+        if (stopLossError) {
+          console.error('❌ Error checking stop-loss ads:', stopLossError);
+          // Ne pas bloquer si erreur de requête, mais logger
+        } else if (!stopLossAds || stopLossAds.length === 0) {
+          return {
+            success: false,
+            error: 'Cannot enable batch processing: No stop-loss ads configured for this user. Please configure at least one stop-loss ad first.'
+          };
+        }
+      }
+
       // Vérifier que batch_interval_ms est au moins 60000ms (1 minute)
       if (config.batch_interval_ms !== undefined && config.batch_interval_ms < 60000) {
         return {

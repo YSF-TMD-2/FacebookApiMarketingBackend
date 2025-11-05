@@ -500,12 +500,38 @@ export async function getFbData(req: Request, res: Response) {
             // Récupérer les données de base de Facebook
             const fbData = await fetchFbGraph(tokenRow.token, 'me?fields=id,name,email');
 
-            // Récupérer les comptes publicitaires
+            // Récupérer TOUS les comptes publicitaires avec Business Manager (sans limitation)
             let adAccounts = [];
             try {
-                const accountsData = await fetchFbGraph(tokenRow.token, 'me/adaccounts?fields=id,name,account_status,currency');
-                adAccounts = accountsData.data || [];
+                const fbQuery = 'me/adaccounts?fields=id,name,account_id,account_status,currency,timezone_name,business_name,business_id,created_time,amount_spent,balance,spend_cap';
+                console.log('🔍 [getFbData] Facebook Graph API Request (with pagination):', fbQuery);
+                console.log('📊 [getFbData] Using pagination to fetch ALL ad accounts (no limit)...');
+                
+                // Utiliser la pagination pour récupérer TOUS les ad accounts
+                const allAccountsData = await fetchFbGraphPaginated(tokenRow.token, fbQuery, undefined, userId, 100);
+                adAccounts = allAccountsData.data || [];
+                
+                console.log('✅ [getFbData] Total Ad Accounts retrieved (ALL pages):', adAccounts.length);
+                console.log('📊 [getFbData] Ad accounts with Business Manager:', adAccounts.filter((acc: any) => acc.business_name).length);
+                console.log('📊 [getFbData] Ad accounts without Business Manager:', adAccounts.filter((acc: any) => !acc.business_name).length);
+                
+                // Log des Business Managers uniques
+                const uniqueBusinessNames = [...new Set(adAccounts.filter((acc: any) => acc.business_name).map((acc: any) => acc.business_name))];
+                console.log('📊 [getFbData] Unique Business Managers found:', uniqueBusinessNames.length);
+                console.log('📊 [getFbData] Business Managers list:', uniqueBusinessNames);
+                
+                // Log d'un échantillon des ad accounts avec leurs infos business
+                console.log('📊 [getFbData] Sample ad accounts (first 10) with business info:', adAccounts.slice(0, 10).map((acc: any) => ({
+                    id: acc.id,
+                    name: acc.name,
+                    account_id: acc.account_id,
+                    business_name: acc.business_name || 'N/A',
+                    business_id: acc.business_id || 'N/A',
+                    currency: acc.currency,
+                    status: acc.account_status
+                })));
             } catch (error) {
+                console.error('❌ [getFbData] Error fetching ad accounts:', error);
                 // Ignore error for ad accounts
             }
 
