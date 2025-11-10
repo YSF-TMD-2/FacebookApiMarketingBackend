@@ -1,6 +1,6 @@
 import { Router } from "express";
 import protect from "../middleware/authMiddleware.js";
-import { saveAccessToken, getUserData, getFbData, getAdAccounts, getAccountCampaigns, getAccountInsights, getCampaignAdsets, getAdsetAds, updateAdStatus, disconnectFacebook, clearFacebookCache, abortFacebookRequests, getFacebookToken, fetchFbGraph, getCompleteAnalytics, getBusinessAdAccounts, getAccountAnalytics, facebookDiagnostic, testFacebookSimple, testAdAccounts, handleOAuthCallback, getAccountTotalSpend } from "../controllers/facebookController.js";
+import { saveAccessToken, getUserData, getFbData, getAdAccounts, getAccountCampaigns, getAccountInsights, getCampaignAdsets, getAdsetAds, updateAdStatus, disconnectFacebook, clearFacebookCache, abortFacebookRequests, getFacebookToken, fetchFbGraph, getCompleteAnalytics, getBusinessAdAccounts, getAccountAnalytics, facebookDiagnostic, testFacebookSimple, testAdAccounts, handleOAuthCallback, getAccountTotalSpend, getAdDetails } from "../controllers/facebookController.js";
 import { Request, Response } from "../types/express.js";
 
 const router = Router();
@@ -143,37 +143,7 @@ router.get("/adset/:adsetId", protect, async (req: Request, res: Response) => {
 });
 
 // get ad details
-router.get("/ad/:adId", protect, async (req: Request, res: Response) => {
-    try {
-        const userId = req.user!.id;
-        const { adId } = req.params;
-        
-        
-        const tokenRow = await getFacebookToken(userId);
-
-        // Récupérer les détails de l'ad avec les insights et les détails créatifs complets
-        const endpoint = `${adId}?fields=id,name,status,created_time,updated_time,adset_id,campaign_id,creative{id,name,title,body,call_to_action_type,image_url,video_id,link_url,object_story_spec,object_type},insights{impressions,clicks,spend,reach,ctr,cpc,conversions}`;
-        console.log(`Facebook API endpoint: ${endpoint}`);
-        
-        const adDetails = await fetchFbGraph(tokenRow.token, endpoint);
-        console.log(`🔍 Ad details retrieved:`, JSON.stringify(adDetails, null, 2));
-        console.log(`🔍 Ad status:`, adDetails.status);
-
-        return res.json({ 
-            success: true,
-            data: adDetails,
-            message: "Ad details retrieved successfully"
-        });
-
-    } catch (error: any) {
-        console.error('❌ Error fetching ad details:', error);
-        return res.status(500).json({ 
-            success: false,
-            message: error.message || "Server error",
-            details: error.response?.data || null
-        });
-    }
-});
+router.get("/ad/:adId", protect, getAdDetails);
 
 // update ad status (pause/activate)
 router.put("/ads/:adId/status", protect, updateAdStatus);

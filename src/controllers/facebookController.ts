@@ -1487,7 +1487,7 @@ export async function getAdDetails(req: Request, res: Response) {
     try {
         const userId = req.user!.id;
         const { adId } = req.params;
-        const { date_preset = 'last_30d' } = req.query;
+        const { date_preset, since, until } = req.query;
 
        
         const tokenRow = await getFacebookToken(userId);
@@ -1517,10 +1517,45 @@ export async function getAdDetails(req: Request, res: Response) {
         // Récupérer les métriques de l'ad
         let adMetrics = {};
         try {
-            const insightsEndpoint = `${adId}/insights?fields=spend,impressions,clicks,reach,frequency,cpc,cpm,ctr,conversions,conversion_values&date_preset=${date_preset}`;
+            let insightsEndpoint = `${adId}/insights?fields=spend,impressions,clicks,reach,frequency,cpc,cpm,ctr,conversions,conversion_values,actions`;
+            
+            // Construire l'endpoint avec les paramètres de date appropriés
+            if (since && until) {
+                insightsEndpoint += `&time_range[since]=${since}&time_range[until]=${until}`;
+                console.log(`🔍 [getAdDetails] Using time_range: ${since} to ${until}`);
+            } else if (date_preset) {
+                insightsEndpoint += `&date_preset=${date_preset}`;
+                console.log(`🔍 [getAdDetails] Using date_preset: ${date_preset}`);
+            } else {
+                // Par défaut, utiliser today
+                insightsEndpoint += `&date_preset=today`;
+                console.log(`🔍 [getAdDetails] Using default date_preset: today`);
+            }
+            
+            console.log(`🔍 [getAdDetails] Full insights endpoint: ${insightsEndpoint}`);
             const insights = await fetchFbGraph(tokenRow.token, insightsEndpoint);
             const insightData = insights.data?.[0] || {};
-            console.log('🔍 Insight data:', insightData);
+            console.log('🔍 [getAdDetails] Insight data:', insightData);
+            console.log('🔍 [getAdDetails] Query params received:', { date_preset, since, until });
+            
+            // Compter les résultats depuis les actions (comme dans la vérification manuelle)
+            // Priorité: utiliser conversions/conversion_values de Facebook (plus fiable, évite les doublons)
+            // Sinon, compter uniquement les types exacts 'lead', 'purchase', 'conversion' (pas les variations)
+            let resultsFromActions = 0;
+            if (insightData.conversions || insightData.conversion_values) {
+                resultsFromActions = parseFloat(insightData.conversions || insightData.conversion_values || 0);
+            } else if (insightData.actions && Array.isArray(insightData.actions)) {
+                resultsFromActions = insightData.actions.reduce((total: number, action: any) => {
+                    const actionType = action.action_type || '';
+                    const actionValue = parseInt(action.value || 0);
+                    // Utiliser uniquement les types exacts pour éviter les doublons
+                    const isResult = actionType === 'lead' || actionType === 'purchase' || actionType === 'conversion';
+                    if (isResult && actionValue > 0) {
+                        return total + actionValue;
+                    }
+                    return total;
+                }, 0);
+            }
             
             adMetrics = {
                 spend: parseFloat(insightData.spend || 0),
@@ -1528,14 +1563,62 @@ export async function getAdDetails(req: Request, res: Response) {
                 clicks: parseInt(insightData.clicks || 0),
                 reach: parseInt(insightData.reach || 0),
                 conversions: parseFloat(insightData.conversions || insightData.conversion_values || 0),
+                resultsFromActions: resultsFromActions, // Ajouter les résultats depuis les actions
+                actions: insightData.actions || [], // Ajouter les actions pour le frontend
                 ctr: parseFloat(insightData.ctr || 0),
                 cpc: parseFloat(insightData.cpc || 0),
                 cpm: parseFloat(insightData.cpm || 0),
                 frequency: parseFloat(insightData.frequency || 0),
                 conversion_rate: insightData.clicks > 0 ? (parseFloat(insightData.conversions || insightData.conversion_values || 0) / insightData.clicks) * 100 : 0
             };
+            
+            console.log(`🔍 [getAdDetails] Results from actions: ${resultsFromActions}, conversions: ${adMetrics.conversions}`);
             console.log('🔍 Ad metrics:', adMetrics);
-        } catch (insightsError) {
+            
+            // Vérifier immédiatement le stop loss si on utilise "today" (métriques du jour)
+            const isTodayMetrics = !since && !until && (!date_preset || date_preset === 'today');
+            console.log(`🔍 [getAdDetails] Checking stop loss: isTodayMetrics=${isTodayMetrics}, spend=${adMetrics.spend}`);
+            
+            if (isTodayMetrics && adMetrics.spend > 0) {
+                try {
+                    console.log(`🔍 [getAdDetails] Triggering immediate stop loss check for ad ${adId}`);
+                    
+                    // Compter les résultats (conversions, leads, purchases)
+                    // Priorité: utiliser conversions/conversion_values de Facebook (plus fiable, évite les doublons)
+                    // Sinon, compter uniquement les types exacts 'lead', 'purchase', 'conversion' (pas les variations)
+                    let results = 0;
+                    if (insightData.conversions || insightData.conversion_values) {
+                        results = parseFloat(insightData.conversions || insightData.conversion_values || 0);
+                    } else if (insightData.actions && Array.isArray(insightData.actions)) {
+                        results = insightData.actions.reduce((total: number, action: any) => {
+                            // Utiliser uniquement les types exacts pour éviter les doublons
+                            if (action.action_type === 'lead' || action.action_type === 'purchase' || action.action_type === 'conversion') {
+                                return total + parseInt(action.value || 0);
+                            }
+                            return total;
+                        }, 0);
+                    }
+                    
+                    console.log(`🔍 [getAdDetails] Current metrics: spend=$${adMetrics.spend}, results=${results}`);
+                    
+                    // Vérifier les conditions de stop loss
+                    const { checkStopLossConditions } = await import('./scheduleController.js');
+                    const stopLossCheck = await checkStopLossConditions(userId, adId);
+                    
+                    console.log(`🔍 [getAdDetails] Stop loss check result: shouldStop=${stopLossCheck.shouldStop}, reason=${stopLossCheck.reason}`);
+                    
+                    if (stopLossCheck.shouldStop) {
+                        console.log(`🛑 Stop loss triggered immediately in getAdDetails for ad ${adId}: ${stopLossCheck.reason}`);
+                    }
+                } catch (stopLossError: any) {
+                    console.error(`❌ Error checking stop loss in getAdDetails:`, stopLossError);
+                    console.error(`❌ Error stack:`, stopLossError.stack);
+                    // Ne pas bloquer la réponse si la vérification du stop loss échoue
+                }
+            } else {
+                console.log(`⚠️ [getAdDetails] Skipping stop loss check: isTodayMetrics=${isTodayMetrics}, spend=${adMetrics.spend}`);
+            }
+        } catch (insightsError: any) {
             console.log('⚠️ Error fetching ad insights:', insightsError.message);
             // Utiliser des valeurs par défaut en cas d'erreur
             adMetrics = {

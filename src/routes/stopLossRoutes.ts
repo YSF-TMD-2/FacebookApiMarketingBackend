@@ -1,6 +1,6 @@
 import { Router } from "express";
 import protect from "../middleware/authMiddleware.js";
-import { configureStopLoss, getStopLossConfigs, getStopLossConfig, deleteStopLossConfig } from "../controllers/stopLossController.js";
+import { configureStopLoss, getStopLossConfigs, getStopLossConfig, deleteStopLossConfig, checkStopLossManually } from "../controllers/stopLossController.js";
 import { Request, Response } from "../types/express.js";
 
 const router = Router();
@@ -13,6 +13,9 @@ router.get("/", protect, getStopLossConfigs);
 
 // Récupérer la configuration stop loss d'une ad spécifique
 router.get("/ad/:adId", protect, getStopLossConfig);
+
+// Vérifier manuellement le stop loss pour une ad (force check and pause if needed)
+router.post("/ad/:adId/check", protect, checkStopLossManually);
 
 // Supprimer une configuration stop loss
 router.delete("/ad/:adId", protect, deleteStopLossConfig);

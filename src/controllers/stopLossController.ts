@@ -20,7 +20,7 @@ export async function configureStopLoss(req: Request, res: Response) {
 
         const userId = req.user.id;
         const { adId } = req.params;
-        const { costPerResult, zeroResultsSpend, enabled } = req.body;
+        const { costPerResult, zeroResultsSpend, enabled, cprEnabled, zeroResultsEnabled } = req.body;
 
         console.log('🔍 Configuring stop loss for ad:', adId, 'CPR:', costPerResult, 'Zero Results Spend:', zeroResultsSpend, 'Enabled:', enabled);
         console.log('🔍 Full request body:', req.body);
@@ -79,7 +79,9 @@ export async function configureStopLoss(req: Request, res: Response) {
             adDetails?.name,
             {
                 costPerResult: costPerResult || null,
-                zeroResultsSpend: zeroResultsSpend || null
+                zeroResultsSpend: zeroResultsSpend || null,
+                cprEnabled: cprEnabled !== undefined ? cprEnabled : (costPerResult ? true : null),
+                zeroResultsEnabled: zeroResultsEnabled !== undefined ? zeroResultsEnabled : (zeroResultsSpend ? true : null)
             },
             enabled !== undefined ? enabled : true
         );
@@ -110,10 +112,13 @@ export async function configureStopLoss(req: Request, res: Response) {
 
     } catch (error: any) {
         console.error('❌ Error configuring stop loss:', error);
+        console.error('❌ Error stack:', error.stack);
+        console.error('❌ Error details:', JSON.stringify(error, null, 2));
         return res.status(500).json({
             success: false,
             message: error.message || "Server error",
-            details: error.response?.data || null
+            details: error.response?.data || null,
+            error: process.env.NODE_ENV === 'development' ? error.stack : undefined
         });
     }
 }
@@ -252,8 +257,13 @@ export async function monitorStopLoss() {
                 let results = 0;
                 
                 // Compter les résultats depuis les actions
-                if (insights.actions && Array.isArray(insights.actions)) {
+                // Priorité: utiliser conversions/conversion_values de Facebook (plus fiable)
+                // Sinon, compter uniquement les types exacts 'lead', 'purchase', 'conversion' (pas les variations)
+                if (insights.conversions || insights.conversion_values) {
+                    results = parseFloat(insights.conversions || insights.conversion_values || 0);
+                } else if (insights.actions && Array.isArray(insights.actions)) {
                     results = insights.actions.reduce((total: number, action: any) => {
+                        // Utiliser uniquement les types exacts pour éviter les doublons
                         if (action.action_type === 'lead' || action.action_type === 'purchase' || action.action_type === 'conversion') {
                             return total + parseInt(action.value || 0);
                         }
@@ -261,23 +271,39 @@ export async function monitorStopLoss() {
                     }, 0);
                 }
 
-                console.log(`🔍 Checking ad ${config.ad_id}: spend=$${spend}, results=${results}`);
+                // S'assurer que les seuils sont bien des nombres
+                const costPerResultThreshold = config.cost_per_result_threshold ? parseFloat(String(config.cost_per_result_threshold)) : null;
+                const zeroResultsSpendThreshold = config.zero_results_spend_threshold ? parseFloat(String(config.zero_results_spend_threshold)) : null;
+
+                console.log(`🔍 Checking ad ${config.ad_id}: spend=$${spend.toFixed(2)}, results=${results}`);
+                console.log(`🔍 Stop loss config: cost_per_result_threshold=${costPerResultThreshold}, zero_results_spend_threshold=${zeroResultsSpendThreshold}`);
+                console.log(`🔍 Config types: cost_per_result_threshold type=${typeof costPerResultThreshold}, zero_results_spend_threshold type=${typeof zeroResultsSpendThreshold}`);
+                console.log(`🔍 Spend type: ${typeof spend}, value: ${spend}`);
 
                 let shouldTrigger = false;
                 let triggerReason = '';
 
                 // Vérifier les conditions de stop loss
-                if (config.cost_per_result_threshold && results > 0) {
+                // 1. Vérifier le cost per result si il y a des résultats
+                if (costPerResultThreshold && results > 0) {
                     const costPerResult = spend / results;
-                    if (costPerResult >= config.cost_per_result_threshold) {
+                    console.log(`🔍 Cost per result: $${costPerResult.toFixed(2)} vs threshold: $${costPerResultThreshold}`);
+                    console.log(`🔍 Comparison: ${costPerResult} >= ${costPerResultThreshold} = ${costPerResult >= costPerResultThreshold}`);
+                    if (costPerResult >= costPerResultThreshold) {
                         shouldTrigger = true;
-                        triggerReason = `Cost per result ($${costPerResult.toFixed(2)}) exceeded threshold ($${config.cost_per_result_threshold})`;
+                        triggerReason = `Cost per result ($${costPerResult.toFixed(2)}) exceeded threshold ($${costPerResultThreshold})`;
                     }
                 }
-
-                if (config.zero_results_spend_threshold && results === 0 && spend >= config.zero_results_spend_threshold) {
-                    shouldTrigger = true;
-                    triggerReason = `Zero results spend ($${spend}) exceeded threshold ($${config.zero_results_spend_threshold})`;
+                // 2. Vérifier le zero results spend si il n'y a pas de résultats
+                else if (zeroResultsSpendThreshold !== null && results === 0) {
+                    console.log(`🔍 Zero results spend: $${spend.toFixed(2)} vs threshold: $${zeroResultsSpendThreshold}`);
+                    console.log(`🔍 Comparison: ${spend} >= ${zeroResultsSpendThreshold} = ${spend >= zeroResultsSpendThreshold}`);
+                    if (spend >= zeroResultsSpendThreshold) {
+                        shouldTrigger = true;
+                        triggerReason = `Zero results spend ($${spend.toFixed(2)}) exceeded threshold ($${zeroResultsSpendThreshold})`;
+                    }
+                } else {
+                    console.log(`⚠️ No stop loss condition checked: results=${results}, costPerResultThreshold=${costPerResultThreshold}, zeroResultsSpendThreshold=${zeroResultsSpendThreshold}`);
                 }
 
                 // Si le seuil est atteint, exécuter l'action
@@ -302,6 +328,42 @@ export async function monitorStopLoss() {
                         // Désactiver la configuration après exécution
                         await StopLossSettingsService.disableStopLoss(config.user_id, config.ad_id);
                         
+                        // Créer une notification pour l'utilisateur
+                        try {
+                            const { error: notifError } = await supabase.from('notifications').insert({
+                                user_id: config.user_id,
+                                type: 'stop_loss',
+                                title: '🛑 Stop Loss Déclenché',
+                                message: `La publicité "${config.ad_name || config.ad_id}" a été arrêtée automatiquement.`,
+                                data: {
+                                    ad_id: config.ad_id,
+                                    ad_name: config.ad_name || config.ad_id,
+                                    spend: spend,
+                                    results: results,
+                                    reason: triggerReason,
+                                    triggered_at: new Date().toISOString(),
+                                    threshold: zeroResultsSpendThreshold || costPerResultThreshold,
+                                    actual_value: results > 0 ? (spend / results) : spend
+                                },
+                                is_read: false
+                            });
+
+                            if (notifError) {
+                                console.error(`❌ Error creating notification for ad ${config.ad_id}:`, notifError);
+                                console.error(`❌ Error details:`, JSON.stringify(notifError, null, 2));
+                            } else {
+                                console.log(`✅ Notification created successfully for ad ${config.ad_id}`);
+                                console.log(`🔔 Notification details:`, {
+                                    user_id: config.user_id,
+                                    type: 'stop_loss',
+                                    ad_id: config.ad_id,
+                                    ad_name: config.ad_name
+                                });
+                            }
+                        } catch (notifErr) {
+                            console.warn(`⚠️ Error creating notification for ad ${config.ad_id}:`, notifErr);
+                        }
+                        
                         // Log de l'exécution
                         await createLog(config.user_id, "STOP_LOSS_TRIGGERED", {
                             adId: config.ad_id,
@@ -323,6 +385,311 @@ export async function monitorStopLoss() {
 
     } catch (error) {
         console.error('❌ Error in monitorStopLoss:', error);
+    }
+}
+
+// Vérifier manuellement le stop loss pour une ad spécifique (appelé depuis l'API)
+export async function checkStopLossManually(req: Request, res: Response) {
+    try {
+        const userId = req.user!.id;
+        const { adId } = req.params;
+
+        console.log(`🔍 Manual stop loss check requested for ad ${adId} by user ${userId}`);
+
+        // Récupérer le token Facebook
+        const tokenRow = await getFacebookToken(userId);
+        
+        // Récupérer les métriques de l'ad pour aujourd'hui
+        const insightsResponse = await fetchFbGraph(
+            tokenRow.token, 
+            `${adId}/insights?fields=spend,actions,conversions,conversion_values&date_preset=today`
+        );
+        
+        const insights = insightsResponse.data?.[0];
+        if (!insights) {
+            return res.status(404).json({
+                success: false,
+                message: "No insights data found for this ad today"
+            });
+        }
+
+        const spend = parseFloat(insights.spend || 0);
+        let results = 0;
+        
+        // Compter les résultats depuis les actions
+        // Priorité: utiliser conversions/conversion_values de Facebook (plus fiable)
+        // Sinon, compter uniquement les types exacts 'lead', 'purchase', 'conversion' (pas les variations)
+        if (insights.conversions || insights.conversion_values) {
+            results = parseFloat(insights.conversions || insights.conversion_values || 0);
+            console.log(`🔍 [Manual Check] Using conversions field: ${results}`);
+        } else if (insights.actions && Array.isArray(insights.actions)) {
+            console.log(`🔍 [Manual Check] Actions array found:`, JSON.stringify(insights.actions, null, 2));
+            // Compter uniquement les types exacts pour éviter les doublons
+            results = insights.actions.reduce((total: number, action: any) => {
+                const actionType = action.action_type || '';
+                const actionValue = parseInt(action.value || 0);
+                // Utiliser uniquement les types exacts, pas les variations (pour éviter les doublons)
+                const isResult = actionType === 'lead' || actionType === 'purchase' || actionType === 'conversion';
+                if (isResult && actionValue > 0) {
+                    console.log(`✅ [Manual Check] Found result action: type=${actionType}, value=${actionValue}`);
+                    return total + actionValue;
+                }
+                return total;
+            }, 0);
+            console.log(`🔍 [Manual Check] Total results from actions (exact types only): ${results}`);
+        } else {
+            console.log(`⚠️ [Manual Check] No conversions or actions data available`);
+            results = 0;
+        }
+
+        console.log(`🔍 [Manual Check] Final metrics - Ad ${adId}: spend=$${spend.toFixed(2)}, results=${results}`);
+
+        // Récupérer la configuration stop loss
+        const { supabase } = await import('../supabaseClient.js');
+        const { data: stopLossConfig } = await supabase
+            .from('stop_loss_settings')
+            .select('*')
+            .eq('user_id', userId)
+            .eq('ad_id', adId)
+            .eq('enabled', true)
+            .single();
+
+        if (!stopLossConfig) {
+            return res.json({
+                success: true,
+                shouldStop: false,
+                message: "Stop-loss is not enabled for this ad",
+                metrics: { spend, results }
+            });
+        }
+
+        // S'assurer que les seuils sont bien des nombres
+        const costPerResultThreshold = stopLossConfig.cost_per_result_threshold ? parseFloat(String(stopLossConfig.cost_per_result_threshold)) : null;
+        const zeroResultsSpendThreshold = stopLossConfig.zero_results_spend_threshold ? parseFloat(String(stopLossConfig.zero_results_spend_threshold)) : null;
+        
+        // Vérifier quels seuils sont activés (par défaut true si null pour rétrocompatibilité)
+        const cprEnabled = stopLossConfig.cpr_enabled !== null ? stopLossConfig.cpr_enabled : true;
+        const zeroResultsEnabled = stopLossConfig.zero_results_enabled !== null ? stopLossConfig.zero_results_enabled : true;
+
+        console.log(`🔍 [Manual Check] Ad ${adId}: spend=$${spend.toFixed(2)}, results=${results}`);
+        console.log(`🔍 [Manual Check] Thresholds: costPerResult=${costPerResultThreshold}, zeroResultsSpend=${zeroResultsSpendThreshold}`);
+        console.log(`🔍 [Manual Check] Thresholds enabled: cpr_enabled=${cprEnabled}, zero_results_enabled=${zeroResultsEnabled}`);
+        console.log(`🔍 [Manual Check] Types: spend=${typeof spend}, costPerResultThreshold=${typeof costPerResultThreshold}, zeroResultsSpendThreshold=${typeof zeroResultsSpendThreshold}`);
+
+        let shouldTrigger = false;
+        let triggerReason = '';
+
+        // Vérifier les conditions de stop loss
+        // 1. Vérifier le cost per result si il y a des résultats ET que le seuil est configuré ET activé
+        if (results > 0 && costPerResultThreshold !== null && costPerResultThreshold > 0 && cprEnabled) {
+            const costPerResult = spend / results;
+            console.log(`🔍 [Manual Check] Cost per result: $${costPerResult.toFixed(2)} vs threshold: $${costPerResultThreshold}`);
+            console.log(`🔍 [Manual Check] Comparison: ${costPerResult} >= ${costPerResultThreshold} = ${costPerResult >= costPerResultThreshold}`);
+            if (costPerResult >= costPerResultThreshold) {
+                shouldTrigger = true;
+                triggerReason = `Cost per result ($${costPerResult.toFixed(2)}) exceeded threshold ($${costPerResultThreshold})`;
+            }
+        }
+        // 2. Vérifier le zero results spend si il n'y a pas de résultats ET que le seuil est configuré ET activé
+        if (results === 0 && zeroResultsSpendThreshold !== null && zeroResultsSpendThreshold > 0 && zeroResultsEnabled) {
+            console.log(`🔍 [Manual Check] Zero results spend: $${spend.toFixed(2)} vs threshold: $${zeroResultsSpendThreshold}`);
+            console.log(`🔍 [Manual Check] Comparison: ${spend} >= ${zeroResultsSpendThreshold} = ${spend >= zeroResultsSpendThreshold}`);
+            if (spend >= zeroResultsSpendThreshold) {
+                shouldTrigger = true;
+                triggerReason = `Zero results spend ($${spend.toFixed(2)}) exceeded threshold ($${zeroResultsSpendThreshold})`;
+                console.log(`✅ [Manual Check] Zero results spend condition MET!`);
+            } else {
+                console.log(`⚠️ [Manual Check] Zero results spend condition NOT met: spend ($${spend.toFixed(2)}) < threshold ($${zeroResultsSpendThreshold})`);
+            }
+        }
+        
+        // Si aucune condition n'a été vérifiée, logger pourquoi
+        if (!shouldTrigger) {
+            let debugReason = '';
+            if (results === 0) {
+                if (!zeroResultsEnabled) {
+                    debugReason = `Zero results spend threshold is disabled`;
+                } else if (!zeroResultsSpendThreshold || zeroResultsSpendThreshold <= 0) {
+                    debugReason = `Zero results spend threshold not configured (threshold: ${zeroResultsSpendThreshold})`;
+                } else if (spend < zeroResultsSpendThreshold) {
+                    debugReason = `Spend ($${spend.toFixed(2)}) is below zero results threshold ($${zeroResultsSpendThreshold})`;
+                } else {
+                    debugReason = `Zero results but condition not met: spend=$${spend.toFixed(2)}, threshold=$${zeroResultsSpendThreshold}`;
+                }
+            } else {
+                if (!cprEnabled) {
+                    debugReason = `Cost per result threshold is disabled`;
+                } else if (!costPerResultThreshold || costPerResultThreshold <= 0) {
+                    debugReason = `Cost per result threshold not configured (threshold: ${costPerResultThreshold})`;
+                } else {
+                    const costPerResult = spend / results;
+                    if (costPerResult < costPerResultThreshold) {
+                        debugReason = `CPR ($${costPerResult.toFixed(2)}) is below threshold ($${costPerResultThreshold})`;
+                    } else {
+                        debugReason = `Has results (${results}) but CPR condition not met: CPR=$${costPerResult.toFixed(2)}, threshold=$${costPerResultThreshold}`;
+                    }
+                }
+            }
+            console.log(`⚠️ [Manual Check] Stop-loss conditions not met: ${debugReason}`);
+        }
+
+        // Si le seuil est atteint, exécuter l'action
+        if (shouldTrigger) {
+            console.log(`🚨 Manual stop loss triggered for ad ${adId}: ${triggerReason}`);
+            
+            // Mettre en pause l'annonce
+            const response = await fetch(`https://graph.facebook.com/v18.0/${adId}`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    status: 'PAUSED',
+                    access_token: tokenRow.token
+                })
+            });
+
+            if (response.ok) {
+                console.log(`✅ Ad ${adId} paused successfully due to manual stop loss check`);
+                
+                // Désactiver la configuration après exécution
+                await StopLossSettingsService.disableStopLoss(userId, adId);
+                
+                // Créer une notification
+                try {
+                    const { error: notifError } = await supabase.from('notifications').insert({
+                        user_id: userId,
+                        type: 'stop_loss',
+                        title: '🛑 Stop Loss Déclenché',
+                        message: `La publicité "${stopLossConfig.ad_name || adId}" a été arrêtée automatiquement.`,
+                        data: {
+                            ad_id: adId,
+                            ad_name: stopLossConfig.ad_name || adId,
+                            spend: spend,
+                            results: results,
+                            reason: triggerReason,
+                            triggered_at: new Date().toISOString(),
+                            threshold: zeroResultsSpendThreshold || costPerResultThreshold,
+                            actual_value: results > 0 ? (spend / results) : spend
+                        },
+                        is_read: false
+                    });
+
+                    if (notifError) {
+                        console.error(`❌ Error creating notification for ad ${adId}:`, notifError);
+                        console.error(`❌ Error details:`, JSON.stringify(notifError, null, 2));
+                    } else {
+                        console.log(`✅ Notification created successfully for ad ${adId}`);
+                        console.log(`🔔 Notification details:`, {
+                            user_id: userId,
+                            type: 'stop_loss',
+                            ad_id: adId,
+                            ad_name: stopLossConfig.ad_name
+                        });
+                    }
+                } catch (notifErr) {
+                    console.warn(`⚠️ Error creating notification:`, notifErr);
+                }
+                
+                // Logger l'action
+                await createLog(userId, "STOP_LOSS_TRIGGERED", {
+                    adId,
+                    adName: stopLossConfig.ad_name,
+                    reason: triggerReason,
+                    spend,
+                    results,
+                    triggeredAt: new Date().toISOString(),
+                    triggeredBy: 'manual_check'
+                });
+
+                return res.json({
+                    success: true,
+                    shouldStop: true,
+                    paused: true,
+                    message: "Ad paused successfully",
+                    reason: triggerReason,
+                    metrics: { spend, results }
+                });
+            } else {
+                const errorData = await response.json();
+                console.error(`❌ Failed to pause ad ${adId}:`, errorData);
+                return res.status(500).json({
+                    success: false,
+                    shouldStop: true,
+                    paused: false,
+                    message: "Stop-loss condition met but failed to pause ad",
+                    error: errorData,
+                    reason: triggerReason
+                });
+            }
+        }
+
+               // Construire le message de debug détaillé
+               let debugReason = '';
+               if (shouldTrigger) {
+                   debugReason = triggerReason;
+               } else {
+                   if (results === 0) {
+                       if (!zeroResultsEnabled) {
+                           debugReason = `Zero results spend threshold is disabled`;
+                       } else if (!zeroResultsSpendThreshold || zeroResultsSpendThreshold <= 0) {
+                           debugReason = `Zero results spend threshold not configured`;
+                       } else if (spend < zeroResultsSpendThreshold) {
+                           debugReason = `Spend ($${spend.toFixed(2)}) is below zero results threshold ($${zeroResultsSpendThreshold})`;
+                       } else {
+                           debugReason = `Zero results but condition not met`;
+                       }
+                   } else {
+                       if (!cprEnabled) {
+                           debugReason = `Cost per result threshold is disabled`;
+                       } else if (!costPerResultThreshold || costPerResultThreshold <= 0) {
+                           debugReason = `Cost per result threshold not configured`;
+                       } else {
+                           const costPerResult = spend / results;
+                           if (costPerResult < costPerResultThreshold) {
+                               debugReason = `CPR ($${costPerResult.toFixed(2)}) is below threshold ($${costPerResultThreshold})`;
+                           } else {
+                               debugReason = `CPR condition not met: CPR=$${costPerResult.toFixed(2)}, threshold=$${costPerResultThreshold}`;
+                           }
+                       }
+                   }
+               }
+
+               // Retourner des informations détaillées pour le débogage
+               const response = {
+                   success: true,
+                   shouldStop: shouldTrigger,
+                   paused: false,
+                   message: shouldTrigger ? "Stop-loss condition met but action not executed" : "Stop-loss conditions not met",
+                   metrics: { spend, results },
+                   thresholds: {
+                       costPerResult: costPerResultThreshold,
+                       zeroResultsSpend: zeroResultsSpendThreshold,
+                       cprEnabled,
+                       zeroResultsEnabled
+                   },
+                   debug: {
+                       spend,
+                       results,
+                       costPerResultThreshold,
+                       zeroResultsSpendThreshold,
+                       cprEnabled,
+                       zeroResultsEnabled,
+                       costPerResult: results > 0 ? spend / results : null,
+                       reason: debugReason
+                   }
+               };
+        
+        console.log(`📊 [Manual Check] Final response:`, JSON.stringify(response, null, 2));
+        
+        return res.json(response);
+
+    } catch (error: any) {
+        console.error('❌ Error in manual stop loss check:', error);
+        return res.status(500).json({
+            success: false,
+            message: error.message || "Server error"
+        });
     }
 }
 

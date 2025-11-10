@@ -102,6 +102,8 @@ export interface Database {
           enabled: boolean;
           cost_per_result_threshold: number | null;
           zero_results_spend_threshold: number | null;
+          cpr_enabled: boolean | null;
+          zero_results_enabled: boolean | null;
           created_at: string;
           updated_at: string;
         };
@@ -114,6 +116,8 @@ export interface Database {
           enabled?: boolean;
           cost_per_result_threshold?: number | null;
           zero_results_spend_threshold?: number | null;
+          cpr_enabled?: boolean | null;
+          zero_results_enabled?: boolean | null;
           created_at?: string;
           updated_at?: string;
         };
@@ -126,6 +130,8 @@ export interface Database {
           enabled?: boolean;
           cost_per_result_threshold?: number | null;
           zero_results_spend_threshold?: number | null;
+          cpr_enabled?: boolean | null;
+          zero_results_enabled?: boolean | null;
           created_at?: string;
           updated_at?: string;
         };

@@ -34,19 +34,28 @@ export async function createNotification(req: Request, res: Response) {
         }
 
         // Créer la notification dans la base de données
+        // Note: ad_id, ad_name, threshold, actual_value doivent être dans data (JSON)
+        const notificationData: any = {
+            user_id: userId,
+            type,
+            title,
+            message,
+            is_read: false
+        };
+
+        // Ajouter les données optionnelles dans le champ data
+        if (adId || adName || threshold !== undefined || actualValue !== undefined) {
+            notificationData.data = {
+                ...(adId && { ad_id: adId }),
+                ...(adName && { ad_name: adName }),
+                ...(threshold !== undefined && { threshold }),
+                ...(actualValue !== undefined && { actual_value: actualValue })
+            };
+        }
+
         const { data, error } = await supabase
             .from('notifications')
-            .insert({
-                user_id: userId,
-                type,
-                title,
-                message,
-                ad_id: adId,
-                ad_name: adName,
-                threshold,
-                actual_value: actualValue,
-                read: false
-            })
+            .insert(notificationData)
             .select()
             .single();
 
@@ -95,9 +104,9 @@ export async function getNotifications(req: Request, res: Response) {
             query = query.eq('type', type);
         }
 
-        // Filtrer les non lues si demandé
+        // Filtrer les non lues si demandé (utiliser is_read qui est le nom de colonne dans la DB)
         if (unreadOnly === 'true') {
-            query = query.eq('read', false);
+            query = query.eq('is_read', false);
         }
 
         const { data: notifications, error } = await query;
@@ -111,10 +120,27 @@ export async function getNotifications(req: Request, res: Response) {
         }
 
         console.log(`✅ Found ${notifications?.length || 0} notifications for user ${userId}`);
+        if (notifications && notifications.length > 0) {
+            console.log('🔍 Sample notification:', JSON.stringify(notifications[0], null, 2));
+            console.log('🔍 All notification types:', notifications.map(n => n.type));
+            const stopLossNotifications = notifications.filter(n => n.type === 'stop_loss');
+            console.log('🔍 Stop-loss notifications count:', stopLossNotifications.length);
+            if (stopLossNotifications.length > 0) {
+                console.log('🔍 Sample stop-loss notification:', JSON.stringify(stopLossNotifications[0], null, 2));
+            }
+        } else {
+            console.log('⚠️ No notifications found for user');
+        }
+        
+        // Normaliser les notifications : mapper is_read vers read pour la compatibilité frontend
+        const normalizedNotifications = (notifications || []).map((notif: any) => ({
+            ...notif,
+            read: notif.is_read !== undefined ? notif.is_read : (notif.read !== undefined ? notif.read : false)
+        }));
 
         return res.json({
             success: true,
-            data: notifications || []
+            data: normalizedNotifications
         });
 
     } catch (error: any) {
@@ -136,7 +162,7 @@ export async function markNotificationAsRead(req: Request, res: Response) {
 
         const { data, error } = await supabase
             .from('notifications')
-            .update({ read: true })
+            .update({ is_read: true })
             .eq('id', notificationId)
             .eq('user_id', userId)
             .select()
@@ -258,7 +284,7 @@ export async function getNotificationStats(req: Request, res: Response) {
         // Compter les notifications par type
         const { data: typeStats, error: typeError } = await supabase
             .from('notifications')
-            .select('type, read')
+            .select('type, is_read')
             .eq('user_id', userId);
 
         if (typeError) {
@@ -271,7 +297,7 @@ export async function getNotificationStats(req: Request, res: Response) {
 
         const stats = {
             total: typeStats?.length || 0,
-            unread: typeStats?.filter(n => !n.read).length || 0,
+            unread: typeStats?.filter(n => !n.is_read).length || 0,
             byType: {
                 stop_loss: 0,
                 info: 0,

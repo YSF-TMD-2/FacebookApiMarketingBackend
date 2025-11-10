@@ -15,7 +15,8 @@ import {
   deleteUser,
   toggleUserStatus,
   resetUserPassword,
-  getAdDetailsForAdmin
+  getAdDetailsForAdmin,
+  getStopLossHistory
 } from '../controllers/adminController.js';
 
 const router = express.Router();
@@ -37,6 +38,9 @@ router.post('/users/:userId/reset-password', resetUserPassword); // Réinitialis
 // IMPORTANT: Les routes plus spécifiques doivent être définies AVANT les routes génériques
 router.get('/stop-loss-ads/:adId/details', getAdDetailsForAdmin); // Détails d'une annonce avec métriques
 router.get('/stop-loss-ads', getAllStopLossAds); // Toutes les ads avec stop-loss actif
+
+// Route historique stop-loss
+router.get('/stop-loss-history', getStopLossHistory); // Historique des stop-loss de tous les utilisateurs
 
 // Routes paramètres système
 router.get('/settings', getSystemSettings);

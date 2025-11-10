@@ -1011,3 +1011,134 @@ export async function resetUserPassword(req: ExpressRequest, res: Response) {
     });
   }
 }
+
+/**
+ * Récupérer l'historique des stop-loss de tous les utilisateurs (Admin seulement)
+ */
+export async function getStopLossHistory(req: ExpressRequest, res: Response) {
+  try {
+    const { userId, limit = 100, offset = 0 } = req.query;
+    const supabaseAdmin = getSupabaseAdminClient();
+
+    console.log('🔍 [ADMIN] Fetching stop-loss history', { userId, limit, offset });
+
+    // Construire la requête pour récupérer les logs de stop-loss
+    // Essayer d'abord avec userId, puis user_id si ça ne fonctionne pas
+    let query = supabaseAdmin
+      .from('logs')
+      .select('*')
+      .eq('action', 'STOP_LOSS_TRIGGERED')
+      .order('created_at', { ascending: false })
+      .range(parseInt(offset as string), parseInt(offset as string) + parseInt(limit as string) - 1);
+
+    // Filtrer par utilisateur si spécifié
+    if (userId) {
+      // Essayer les deux noms de colonnes possibles
+      query = query.or(`userId.eq.${userId},user_id.eq.${userId}`);
+    }
+
+    const { data: logs, error } = await query;
+
+    if (error) {
+      console.error('❌ Error fetching stop-loss history:', error);
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to fetch stop-loss history',
+        error: error.message
+      });
+    }
+
+    // Enrichir les logs avec les informations utilisateur et ad
+    const enrichedHistory = await Promise.all(
+      (logs || []).map(async (log: any) => {
+        try {
+          // Normaliser le userId (peut être userId ou user_id)
+          const logUserId = log.userId || log.user_id;
+          
+          // Récupérer le nom de l'ad depuis stop_loss_settings si disponible
+          let adName = null;
+          if (log.details?.adId || log.details?.ad_id) {
+            const adId = log.details?.adId || log.details?.ad_id;
+            const { data: stopLossData } = await supabaseAdmin
+              .from('stop_loss_settings')
+              .select('ad_name')
+              .eq('ad_id', adId)
+              .eq('user_id', logUserId)
+              .limit(1)
+              .maybeSingle();
+            
+            if (stopLossData) {
+              adName = stopLossData.ad_name;
+            }
+          }
+
+          return {
+            id: log.id,
+            userId: logUserId,
+            adId: log.details?.adId || log.details?.ad_id,
+            adName: adName || log.details?.adName || log.details?.ad_name || 'Unknown',
+            reason: log.details?.reason || 'Unknown reason',
+            spend: log.details?.spend || 0,
+            results: log.details?.results || 0,
+            threshold: log.details?.threshold,
+            actualValue: log.details?.actualValue || log.details?.actual_value,
+            triggeredAt: log.details?.triggeredAt || log.details?.triggered_at || log.created_at,
+            triggeredBy: log.details?.triggeredBy || log.details?.triggered_by || 'automatic',
+            createdAt: log.created_at,
+            details: log.details
+          };
+        } catch (err) {
+          console.error('Error enriching log:', err);
+          const logUserId = log.userId || log.user_id;
+          return {
+            id: log.id,
+            userId: logUserId,
+            adId: log.details?.adId || log.details?.ad_id,
+            adName: log.details?.adName || log.details?.ad_name || 'Unknown',
+            reason: log.details?.reason || 'Unknown reason',
+            spend: log.details?.spend || 0,
+            results: log.details?.results || 0,
+            threshold: log.details?.threshold,
+            actualValue: log.details?.actualValue || log.details?.actual_value,
+            triggeredAt: log.details?.triggeredAt || log.details?.triggered_at || log.created_at,
+            triggeredBy: log.details?.triggeredBy || log.details?.triggered_by || 'automatic',
+            createdAt: log.created_at,
+            details: log.details
+          };
+        }
+      })
+    );
+
+    // Compter le total pour la pagination
+    let countQuery = supabaseAdmin
+      .from('logs')
+      .select('*', { count: 'exact', head: true })
+      .eq('action', 'STOP_LOSS_TRIGGERED');
+
+    if (userId) {
+      countQuery = countQuery.or(`userId.eq.${userId},user_id.eq.${userId}`);
+    }
+
+    const { count } = await countQuery;
+
+    console.log(`✅ [ADMIN] Found ${enrichedHistory.length} stop-loss events (total: ${count})`);
+
+    return res.json({
+      success: true,
+      data: enrichedHistory,
+      pagination: {
+        total: count || 0,
+        limit: parseInt(limit as string),
+        offset: parseInt(offset as string),
+        hasMore: (count || 0) > parseInt(offset as string) + parseInt(limit as string)
+      }
+    });
+
+  } catch (error: any) {
+    console.error('❌ Error in getStopLossHistory:', error);
+    return res.status(500).json({
+      success: false,
+      message: error.message || 'Server error'
+    });
+  }
+}

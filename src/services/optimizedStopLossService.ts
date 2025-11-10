@@ -21,6 +21,8 @@ interface AdWithStopLoss {
   account_id: string;
   cost_per_result_threshold?: number;
   zero_results_spend_threshold?: number;
+  cpr_enabled?: boolean;
+  zero_results_enabled?: boolean;
   enabled: boolean;
 }
 
@@ -203,18 +205,30 @@ class OptimizedStopLossService {
         .select('*')
         .eq('enabled', true);
 
-      if (error) throw error;
+      if (error) {
+        console.error('❌ [Batch] Error fetching ads with stop-loss:', error);
+        throw error;
+      }
 
-      return (data || []).map(item => ({
+      const ads = (data || []).map(item => ({
         ad_id: item.ad_id,
         user_id: item.user_id,
         account_id: item.account_id,
         cost_per_result_threshold: item.cost_per_result_threshold,
         zero_results_spend_threshold: item.zero_results_spend_threshold,
+        cpr_enabled: item.cpr_enabled !== null ? item.cpr_enabled : true, // Par défaut true si null pour rétrocompatibilité
+        zero_results_enabled: item.zero_results_enabled !== null ? item.zero_results_enabled : true, // Par défaut true si null pour rétrocompatibilité
         enabled: item.enabled
       }));
+
+      console.log(`📊 [Batch] Found ${ads.length} ads with stop-loss enabled`);
+      ads.forEach(ad => {
+        console.log(`  - Ad ${ad.ad_id}: zero_results_spend=${ad.zero_results_spend_threshold}, cost_per_result=${ad.cost_per_result_threshold}`);
+      });
+
+      return ads;
     } catch (error) {
-      console.error('❌ Error fetching ads with stop-loss:', error);
+      console.error('❌ [Batch] Error fetching ads with stop-loss:', error);
       return [];
     }
   }
@@ -344,22 +358,45 @@ class OptimizedStopLossService {
       // Traiter chaque ad
       const processedAds: ProcessedAd[] = [];
 
+      console.log(`🔍 [Batch] Insights map contains ${insightsMap.size} entries`);
+      console.log(`🔍 [Batch] Insights map keys:`, Array.from(insightsMap.keys()));
+
       for (const ad of ads) {
+        console.log(`🔍 [Batch] Looking for metrics for ad ${ad.ad_id}`);
         const metrics = insightsMap.get(ad.ad_id);
         
         if (!metrics) {
-          console.warn(`⚠️ No metrics found for ad ${ad.ad_id}`);
+          console.error(`❌ [Batch] No metrics found for ad ${ad.ad_id}`);
+          console.error(`❌ [Batch] Available keys in map:`, Array.from(insightsMap.keys()));
+          console.error(`❌ [Batch] Ad ID type: ${typeof ad.ad_id}, value: ${ad.ad_id}`);
           // Ajouter à la retry queue
           await this.addToRetryQueue(userId, ad.ad_id, 'No metrics returned');
           continue;
         }
+        
+        console.log(`✅ [Batch] Metrics found for ad ${ad.ad_id}: spend=$${metrics.spend}, results=${metrics.results}`);
 
         // Vérifier les conditions de stop-loss
+        console.log(`🔍 [Batch] Evaluating stop-loss for ad ${ad.ad_id}: spend=$${metrics.spend.toFixed(2)}, results=${metrics.results}`);
+        console.log(`🔍 [Batch] Thresholds: cost_per_result=${ad.cost_per_result_threshold}, zero_results_spend=${ad.zero_results_spend_threshold}`);
+        console.log(`🔍 [Batch] Thresholds enabled: cpr_enabled=${ad.cpr_enabled}, zero_results_enabled=${ad.zero_results_enabled}`);
+        console.log(`🔍 [Batch] Ad enabled: ${ad.enabled}`);
+        
         const shouldStop = this.evaluateStopConditions(
           metrics,
           ad.cost_per_result_threshold,
-          ad.zero_results_spend_threshold
+          ad.zero_results_spend_threshold,
+          ad.cpr_enabled,
+          ad.zero_results_enabled
         );
+
+        console.log(`🔍 [Batch] Should stop for ad ${ad.ad_id}: ${shouldStop}`);
+        
+        if (shouldStop) {
+          console.log(`🛑 [Batch] Stop-loss triggered for ad ${ad.ad_id}: ${this.getStopReason(metrics, ad)}`);
+        } else {
+          console.log(`✅ [Batch] No stop-loss trigger for ad ${ad.ad_id} - conditions not met`);
+        }
 
         processedAds.push({
           adId: ad.ad_id,
@@ -374,9 +411,16 @@ class OptimizedStopLossService {
       // Mettre en pause les ads qui doivent être arrêtées
       const adsToPause = processedAds.filter(ad => ad.shouldStop);
       
+      console.log(`🔍 [Batch] Processed ${processedAds.length} ads, ${adsToPause.length} need to be paused`);
+      
       if (adsToPause.length > 0) {
-        console.log(`🛑 Pausing ${adsToPause.length} ads due to stop-loss triggers`);
+        console.log(`🛑 [Batch] Pausing ${adsToPause.length} ads due to stop-loss triggers:`);
+        adsToPause.forEach(ad => {
+          console.log(`  - Ad ${ad.adId}: ${ad.reason}`);
+        });
         await this.pauseAdsInBatch(token, adsToPause, userId, accountId);
+      } else {
+        console.log(`✅ [Batch] No ads to pause for group ${key}`);
       }
 
     } catch (error) {
@@ -394,21 +438,38 @@ class OptimizedStopLossService {
   private evaluateStopConditions(
     metrics: AdMetrics,
     costPerResultThreshold?: number,
-    zeroResultsSpendThreshold?: number
+    zeroResultsSpendThreshold?: number,
+    cprEnabled: boolean = true,
+    zeroResultsEnabled: boolean = true
   ): boolean {
     const { spend, results } = metrics;
 
-    // Condition 1: Coût par résultat dépassé
-    if (costPerResultThreshold && results > 0) {
+    // S'assurer que les seuils sont bien des nombres
+    const cprThreshold = costPerResultThreshold ? parseFloat(String(costPerResultThreshold)) : null;
+    const zrsThreshold = zeroResultsSpendThreshold ? parseFloat(String(zeroResultsSpendThreshold)) : null;
+
+    console.log(`🔍 Evaluating stop conditions: spend=$${spend.toFixed(2)}, results=${results}`);
+    console.log(`🔍 Thresholds: costPerResult=${cprThreshold}, zeroResultsSpend=${zrsThreshold}`);
+    console.log(`🔍 Thresholds enabled: cpr_enabled=${cprEnabled}, zero_results_enabled=${zeroResultsEnabled}`);
+    console.log(`🔍 Types: spend=${typeof spend}, cprThreshold=${typeof cprThreshold}, zrsThreshold=${typeof zrsThreshold}`);
+
+    // Condition 1: Coût par résultat dépassé (seulement si le seuil est activé)
+    if (cprThreshold !== null && results > 0 && cprEnabled) {
       const costPerResult = spend / results;
-      if (costPerResult >= costPerResultThreshold) {
+      console.log(`🔍 Cost per result: $${costPerResult.toFixed(2)} vs threshold: $${cprThreshold}`);
+      console.log(`🔍 Comparison: ${costPerResult} >= ${cprThreshold} = ${costPerResult >= cprThreshold}`);
+      if (costPerResult >= cprThreshold) {
         return true;
       }
     }
 
-    // Condition 2: Dépense sans résultats dépassée
-    if (zeroResultsSpendThreshold && results === 0 && spend >= zeroResultsSpendThreshold) {
-      return true;
+    // Condition 2: Dépense sans résultats dépassée (seulement si le seuil est activé)
+    if (zrsThreshold !== null && results === 0 && zeroResultsEnabled) {
+      console.log(`🔍 Zero results spend: $${spend.toFixed(2)} vs threshold: $${zrsThreshold}`);
+      console.log(`🔍 Comparison: ${spend} >= ${zrsThreshold} = ${spend >= zrsThreshold}`);
+      if (spend >= zrsThreshold) {
+        return true;
+      }
     }
 
     return false;
@@ -461,13 +522,18 @@ class OptimizedStopLossService {
       for (const ad of ads) {
         const success = pauseResults.get(ad.adId);
         
+        console.log(`🔍 [Batch] Pause result for ad ${ad.adId}: ${success ? 'SUCCESS' : 'FAILED'}`);
+        
         if (success) {
+          console.log(`✅ [Batch] Ad ${ad.adId} paused successfully. Reason: ${ad.reason}`);
+          
           // Créer notification
           await this.createNotification(ad.userId, ad.adId, ad.metrics, ad.reason!);
           
           // Logger l'événement
           await this.logStopLossEvent(ad.userId, ad.adId, ad.metrics, ad.reason!);
         } else {
+          console.error(`❌ [Batch] Failed to pause ad ${ad.adId}`);
           // Échec, ajouter à retry queue
           await this.addToRetryQueue(ad.userId, ad.adId, 'Failed to pause ad');
         }

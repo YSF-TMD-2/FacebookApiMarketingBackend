@@ -22,6 +22,7 @@ const app = express();
 const isAllowedUrl = (origin: string): boolean => {
     // Patterns pour détecter automatiquement les URLs autorisées
     const patterns: (string | RegExp)[] = [
+      "https://slobberingly-uncombinative-camryn.ngrok-free.dev",
       // Vercel - pattern très général pour capturer toutes les URLs Vercel
       /^https:\/\/[a-zA-Z0-9-]+\.vercel\.app$/,
     
