@@ -7,7 +7,7 @@ import { Request as ExpressRequest } from '../types/express.js';
 let supabaseAdminClient: ReturnType<typeof createClient> | null = null;
 let isInitialized = false;
 
-function getSupabaseAdminClient() {
+export function getSupabaseAdminClient() {
   if (supabaseAdminClient && isInitialized) {
     return supabaseAdminClient;
   }

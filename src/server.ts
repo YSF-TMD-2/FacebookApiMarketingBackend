@@ -10,7 +10,7 @@ import logsRoutes from "./routes/logsRoutes.js";
 import notificationRoutes from "./routes/notificationRoutes.js";
 import adminRoutes from "./routes/adminRoutes.js";
 import { startScheduleService } from "./controllers/scheduleController.js";
-import { startStopLossService } from "./controllers/stopLossController.js";
+// import { startStopLossService } from "./controllers/stopLossController.js"; // ❌ Désactivé - Utilisation du service optimisé uniquement
 import { optimizedStopLossService } from "./services/optimizedStopLossService.js";
 
 dotenv.config();
@@ -2228,7 +2228,9 @@ app.listen(PORT, () => {
   // Démarrer les services
   console.log('🚀 Starting background services...');
   startScheduleService();
-  startStopLossService();
+  
+  // ❌ Service traditionnel désactivé - Utilisation du service optimisé uniquement
+  // startStopLossService();
   
   // Démarrer le service stop-loss optimisé (utilise Meta Batch API)
   optimizedStopLossService.initialize().catch(err => {

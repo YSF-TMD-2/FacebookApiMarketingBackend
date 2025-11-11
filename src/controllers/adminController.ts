@@ -1020,63 +1020,95 @@ export async function getStopLossHistory(req: ExpressRequest, res: Response) {
     const { userId, limit = 100, offset = 0 } = req.query;
     const supabaseAdmin = getSupabaseAdminClient();
 
-    console.log('🔍 [ADMIN] Fetching stop-loss history', { userId, limit, offset });
+    console.log('🔍 [ADMIN] Fetching stop-loss history (triggered events only)', { userId, limit, offset });
 
-    // Construire la requête pour récupérer les logs de stop-loss
-    // Essayer d'abord avec userId, puis user_id si ça ne fonctionne pas
-    let query = supabaseAdmin
+    // Récupérer UNIQUEMENT les logs de déclenchement (STOP_LOSS_TRIGGERED) - les événements réels
+    // L'historique doit afficher seulement les stop-loss qui ont été réellement déclenchés
+    let logsQuery = supabaseAdmin
       .from('logs')
       .select('*')
       .eq('action', 'STOP_LOSS_TRIGGERED')
-      .order('created_at', { ascending: false })
-      .range(parseInt(offset as string), parseInt(offset as string) + parseInt(limit as string) - 1);
+      .order('created_at', { ascending: false });
 
-    // Filtrer par utilisateur si spécifié
     if (userId) {
-      // Essayer les deux noms de colonnes possibles
-      query = query.or(`userId.eq.${userId},user_id.eq.${userId}`);
+      logsQuery = logsQuery.or(`userId.eq.${userId},user_id.eq.${userId}`);
     }
 
-    const { data: logs, error } = await query;
+    const { data: logs, error: logsError } = await logsQuery;
 
-    if (error) {
-      console.error('❌ Error fetching stop-loss history:', error);
+    if (logsError) {
+      console.error('❌ Error fetching stop-loss logs:', logsError);
       return res.status(500).json({
         success: false,
-        message: 'Failed to fetch stop-loss history',
-        error: error.message
+        message: "Failed to fetch stop-loss history"
       });
     }
 
-    // Enrichir les logs avec les informations utilisateur et ad
+    // Récupérer la configuration du batch pour les informations d'intervalle (au moment du déclenchement)
+    let batchConfig: any = null;
+    try {
+      const { data: batchData } = await supabaseAdmin
+        .from('system_settings')
+        .select('value')
+        .eq('key', 'stop_loss_batch')
+        .single();
+      
+      if (batchData) {
+        batchConfig = (batchData as any).value;
+      }
+    } catch (error) {
+      console.warn('⚠️ Could not fetch batch config:', error);
+    }
+
+    // Récupérer les informations utilisateur
+    const { data: allUsers, error: usersError } = await supabaseAdmin.rpc('get_all_users');
+    const usersMap = new Map();
+    if (allUsers && Array.isArray(allUsers)) {
+      allUsers.forEach((user: any) => {
+        usersMap.set(user.id, {
+          email: user.email || null,
+          name: user.user_metadata?.full_name || user.user_metadata?.name || null,
+          role: user.role || 'user'
+        });
+      });
+    }
+
+    // Enrichir les logs de déclenchement avec toutes les informations nécessaires
     const enrichedHistory = await Promise.all(
       (logs || []).map(async (log: any) => {
         try {
-          // Normaliser le userId (peut être userId ou user_id)
           const logUserId = log.userId || log.user_id;
+          const userInfo = usersMap.get(logUserId) || { email: null, name: null };
           
           // Récupérer le nom de l'ad depuis stop_loss_settings si disponible
+          // Cela permet d'avoir le nom même si la config a été supprimée après
           let adName = null;
+          let accountId = null;
           if (log.details?.adId || log.details?.ad_id) {
             const adId = log.details?.adId || log.details?.ad_id;
             const { data: stopLossData } = await supabaseAdmin
               .from('stop_loss_settings')
-              .select('ad_name')
+              .select('ad_name, account_id')
               .eq('ad_id', adId)
               .eq('user_id', logUserId)
               .limit(1)
               .maybeSingle();
             
             if (stopLossData) {
-              adName = stopLossData.ad_name;
+              adName = (stopLossData as any).ad_name;
+              accountId = (stopLossData as any).account_id;
             }
           }
 
           return {
             id: log.id,
+            type: 'triggered', // Seul type dans l'historique : les événements déclenchés
             userId: logUserId,
+            userEmail: userInfo.email,
+            userName: userInfo.name,
             adId: log.details?.adId || log.details?.ad_id,
             adName: adName || log.details?.adName || log.details?.ad_name || 'Unknown',
+            accountId: accountId || log.details?.accountId || log.details?.account_id,
             reason: log.details?.reason || 'Unknown reason',
             spend: log.details?.spend || 0,
             results: log.details?.results || 0,
@@ -1085,16 +1117,24 @@ export async function getStopLossHistory(req: ExpressRequest, res: Response) {
             triggeredAt: log.details?.triggeredAt || log.details?.triggered_at || log.created_at,
             triggeredBy: log.details?.triggeredBy || log.details?.triggered_by || 'automatic',
             createdAt: log.created_at,
-            details: log.details
+            details: log.details,
+            // Informations batch au moment du déclenchement
+            batchInterval: batchConfig?.batch_interval_ms ? `${batchConfig.batch_interval_ms / 1000}s` : '60s',
+            batchEnabled: batchConfig?.enabled !== false
           };
         } catch (err) {
           console.error('Error enriching log:', err);
           const logUserId = log.userId || log.user_id;
+          const userInfo = usersMap.get(logUserId) || { email: null, name: null };
           return {
             id: log.id,
+            type: 'triggered',
             userId: logUserId,
+            userEmail: userInfo.email,
+            userName: userInfo.name,
             adId: log.details?.adId || log.details?.ad_id,
             adName: log.details?.adName || log.details?.ad_name || 'Unknown',
+            accountId: log.details?.accountId || log.details?.account_id,
             reason: log.details?.reason || 'Unknown reason',
             spend: log.details?.spend || 0,
             results: log.details?.results || 0,
@@ -1103,39 +1143,92 @@ export async function getStopLossHistory(req: ExpressRequest, res: Response) {
             triggeredAt: log.details?.triggeredAt || log.details?.triggered_at || log.created_at,
             triggeredBy: log.details?.triggeredBy || log.details?.triggered_by || 'automatic',
             createdAt: log.created_at,
-            details: log.details
+            details: log.details,
+            batchInterval: batchConfig?.batch_interval_ms ? `${batchConfig.batch_interval_ms / 1000}s` : '60s',
+            batchEnabled: batchConfig?.enabled !== false
           };
         }
       })
     );
 
-    // Compter le total pour la pagination
-    let countQuery = supabaseAdmin
-      .from('logs')
-      .select('*', { count: 'exact', head: true })
-      .eq('action', 'STOP_LOSS_TRIGGERED');
+    // Compter le total AVANT pagination
+    const totalCount = enrichedHistory.length;
 
-    if (userId) {
-      countQuery = countQuery.or(`userId.eq.${userId},user_id.eq.${userId}`);
-    }
-
-    const { count } = await countQuery;
-
-    console.log(`✅ [ADMIN] Found ${enrichedHistory.length} stop-loss events (total: ${count})`);
+    // Paginer le résultat
+    const paginated = enrichedHistory.slice(
+      parseInt(offset as string),
+      parseInt(offset as string) + parseInt(limit as string)
+    );
+    
+    console.log(`✅ [ADMIN] Found ${enrichedHistory.length} triggered stop-loss events (total: ${totalCount})`);
 
     return res.json({
       success: true,
-      data: enrichedHistory,
+      data: paginated,
       pagination: {
-        total: count || 0,
+        total: totalCount,
         limit: parseInt(limit as string),
         offset: parseInt(offset as string),
-        hasMore: (count || 0) > parseInt(offset as string) + parseInt(limit as string)
+        hasMore: totalCount > parseInt(offset as string) + parseInt(limit as string)
+      },
+      stats: {
+        triggered: enrichedHistory.length,
+        total: totalCount
       }
     });
 
   } catch (error: any) {
     console.error('❌ Error in getStopLossHistory:', error);
+    return res.status(500).json({
+      success: false,
+      message: error.message || 'Server error'
+    });
+  }
+}
+
+/**
+ * Delete stop-loss history entry (Admin only)
+ * Only triggered events (logs) can be deleted from history
+ */
+export async function deleteStopLossHistoryEntry(req: ExpressRequest, res: Response) {
+  try {
+    const { id, type } = req.params; // id is log id, type must be 'triggered'
+    const supabaseAdmin = getSupabaseAdminClient();
+
+    console.log(`🗑️ [ADMIN] Deleting stop-loss history entry: ${id}, type: ${type}`);
+
+    // Seulement les événements déclenchés (triggered) peuvent être supprimés de l'historique
+    if (type !== 'triggered') {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid type. Only "triggered" entries can be deleted from history.'
+      });
+    }
+
+    // Delete from logs table
+    const { error: deleteError } = await (supabaseAdmin
+      .from('logs') as any)
+      .delete()
+      .eq('id', id)
+      .eq('action', 'STOP_LOSS_TRIGGERED');
+
+    if (deleteError) {
+      console.error('❌ Error deleting log entry:', deleteError);
+      return res.status(500).json({
+        success: false,
+        message: `Failed to delete log entry: ${deleteError.message}`
+      });
+    }
+
+    console.log(`✅ [ADMIN] Log entry ${id} deleted successfully`);
+
+    return res.json({
+      success: true,
+      message: 'Entry deleted successfully'
+    });
+
+  } catch (error: any) {
+    console.error('❌ Error in deleteStopLossHistoryEntry:', error);
     return res.status(500).json({
       success: false,
       message: error.message || 'Server error'

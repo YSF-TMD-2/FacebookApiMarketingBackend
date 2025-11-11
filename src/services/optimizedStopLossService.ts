@@ -1,4 +1,5 @@
 import { supabase } from '../supabaseClient.js';
+import { getSupabaseAdminClient } from '../middleware/roleMiddleware.js';
 import { metaBatchAPI } from './metaBatchAPI.js';
 import { rateLimitManager } from './rateLimitManager.js';
 import StopLossSettingsService from './stopLossSettingsService.js';
@@ -38,6 +39,11 @@ interface ProcessedAd {
   metrics: AdMetrics;
   shouldStop: boolean;
   reason?: string;
+  adName?: string;
+  threshold?: number;
+  actualValue?: number;
+  costPerResultThreshold?: number;
+  zeroResultsSpendThreshold?: number;
 }
 
 /**
@@ -68,8 +74,8 @@ class OptimizedStopLossService {
    */
   private async loadConfig(): Promise<void> {
     try {
-      const { data, error } = await supabase
-        .from('system_settings')
+      const { data, error } = await (supabase
+        .from('system_settings') as any)
         .select('value')
         .eq('key', 'stop_loss_batch')
         .single();
@@ -91,7 +97,7 @@ class OptimizedStopLossService {
         return;
       }
 
-      this.config = data.value as BatchConfig;
+      this.config = ((data as any).value as any) as BatchConfig;
       console.log('✅ Batch config loaded:', this.config);
     } catch (error) {
       console.error('❌ Error loading config:', error);
@@ -114,8 +120,17 @@ class OptimizedStopLossService {
       return;
     }
 
+    // Vérifier s'il y a des ads à surveiller avant de démarrer
+    const adsWithStopLoss = await this.getAdsWithStopLoss();
+    if (adsWithStopLoss.length === 0) {
+      console.log('📭 No ads with stop-loss enabled - service will not start');
+      console.log('💡 Service will automatically start when a stop-loss is enabled');
+      return;
+    }
+
     this.isRunning = true;
     console.log(`🚀 Starting optimized stop-loss service (interval: ${this.config.batch_interval_ms}ms)`);
+    console.log(`📊 Monitoring ${adsWithStopLoss.length} ads with stop-loss enabled`);
 
     // Exécuter immédiatement
     await this.processBatch();
@@ -126,6 +141,28 @@ class OptimizedStopLossService {
         await this.processBatch();
       }
     }, this.config.batch_interval_ms);
+  }
+  
+  /**
+   * Redémarrer le service si nécessaire (quand une nouvelle ad avec stop-loss est activée)
+   */
+  async restartIfNeeded(): Promise<void> {
+    if (!this.config) {
+      await this.loadConfig();
+    }
+    
+    if (!this.config?.enabled) {
+      return;
+    }
+
+    // Si le service n'est pas en cours d'exécution, vérifier s'il y a des ads à surveiller
+    if (!this.isRunning) {
+      const adsWithStopLoss = await this.getAdsWithStopLoss();
+      if (adsWithStopLoss.length > 0) {
+        console.log(`🔄 Restarting stop-loss service - ${adsWithStopLoss.length} ads to monitor`);
+        await this.start();
+      }
+    }
   }
 
   /**
@@ -159,7 +196,9 @@ class OptimizedStopLossService {
       const adsWithStopLoss = await this.getAdsWithStopLoss();
       
       if (adsWithStopLoss.length === 0) {
-        console.log('📭 No ads with stop-loss enabled');
+        console.log('📭 No ads with stop-loss enabled - stopping batch service');
+        // Arrêter le service batch s'il n'y a plus d'ads à surveiller
+        await this.stop();
         return;
       }
 
@@ -200,17 +239,20 @@ class OptimizedStopLossService {
    */
   private async getAdsWithStopLoss(): Promise<AdWithStopLoss[]> {
     try {
-      const { data, error } = await supabase
-        .from('stop_loss_settings')
+      // Utiliser le client admin pour contourner les RLS policies
+      const supabaseAdmin = getSupabaseAdminClient();
+      const { data, error } = await (supabaseAdmin
+        .from('stop_loss_settings') as any)
         .select('*')
         .eq('enabled', true);
 
       if (error) {
         console.error('❌ [Batch] Error fetching ads with stop-loss:', error);
+        console.error('❌ [Batch] Error details:', JSON.stringify(error, null, 2));
         throw error;
       }
 
-      const ads = (data || []).map(item => ({
+      const ads = (data || []).map((item: any) => ({
         ad_id: item.ad_id,
         user_id: item.user_id,
         account_id: item.account_id,
@@ -272,8 +314,8 @@ class OptimizedStopLossService {
         return groupedAds;
       }
 
-      const { data: batchConfigs, error } = await supabase
-        .from('user_batch_config')
+      const { data: batchConfigs, error } = await (supabase
+        .from('user_batch_config') as any)
         .select('user_id, enabled')
         .in('user_id', userIds);
 
@@ -284,7 +326,7 @@ class OptimizedStopLossService {
 
       // Créer un map user_id -> enabled
       const userEnabledMap = new Map<string, boolean>();
-      batchConfigs?.forEach(config => {
+      batchConfigs?.forEach((config: any) => {
         userEnabledMap.set(config.user_id, config.enabled !== false); // true par défaut si non défini
       });
 
@@ -398,13 +440,35 @@ class OptimizedStopLossService {
           console.log(`✅ [Batch] No stop-loss trigger for ad ${ad.ad_id} - conditions not met`);
         }
 
+        // Calculer les valeurs pour la notification et le log
+        let threshold: number | undefined;
+        let actualValue: number | undefined;
+        
+        if (shouldStop) {
+          if (ad.cpr_enabled && ad.cost_per_result_threshold && metrics.results > 0) {
+            const costPerResult = metrics.spend / metrics.results;
+            if (costPerResult >= ad.cost_per_result_threshold) {
+              threshold = ad.cost_per_result_threshold;
+              actualValue = costPerResult;
+            }
+          } else if (ad.zero_results_enabled && ad.zero_results_spend_threshold && metrics.results === 0) {
+            threshold = ad.zero_results_spend_threshold;
+            actualValue = metrics.spend;
+          }
+        }
+        
         processedAds.push({
           adId: ad.ad_id,
           userId: ad.user_id,
           accountId: ad.account_id,
           metrics,
           shouldStop,
-          reason: shouldStop ? this.getStopReason(metrics, ad) : undefined
+          reason: shouldStop ? this.getStopReason(metrics, ad) : undefined,
+          adName: undefined, // Sera récupéré plus tard depuis stop_loss_settings
+          threshold,
+          actualValue,
+          costPerResultThreshold: ad.cost_per_result_threshold,
+          zeroResultsSpendThreshold: ad.zero_results_spend_threshold
         });
       }
 
@@ -484,15 +548,17 @@ class OptimizedStopLossService {
   ): string {
     const { spend, results } = metrics;
 
-    if (ad.cost_per_result_threshold && results > 0) {
+    // Vérifier Cost Per Result (seulement si activé)
+    if (ad.cpr_enabled && ad.cost_per_result_threshold && results > 0) {
       const costPerResult = spend / results;
       if (costPerResult >= ad.cost_per_result_threshold) {
-        return `Cost per result ${costPerResult.toFixed(2)} >= ${ad.cost_per_result_threshold}`;
+        return `Cost per result $${costPerResult.toFixed(2)} >= $${ad.cost_per_result_threshold} (CPR threshold enabled)`;
       }
     }
 
-    if (ad.zero_results_spend_threshold && results === 0 && spend >= ad.zero_results_spend_threshold) {
-      return `Spent $${spend.toFixed(2)} with zero results (threshold: $${ad.zero_results_spend_threshold})`;
+    // Vérifier Zero Results Spend (seulement si activé)
+    if (ad.zero_results_enabled && ad.zero_results_spend_threshold && results === 0 && spend >= ad.zero_results_spend_threshold) {
+      return `Spent $${spend.toFixed(2)} with zero results (threshold: $${ad.zero_results_spend_threshold}, Zero Results threshold enabled)`;
     }
 
     return 'Unknown reason';
@@ -518,7 +584,7 @@ class OptimizedStopLossService {
         accountId
       );
 
-      // Créer des notifications et logs pour chaque ad
+      // Créer des notifications et logs pour chaque ad, et désactiver le stop-loss
       for (const ad of ads) {
         const success = pauseResults.get(ad.adId);
         
@@ -527,11 +593,88 @@ class OptimizedStopLossService {
         if (success) {
           console.log(`✅ [Batch] Ad ${ad.adId} paused successfully. Reason: ${ad.reason}`);
           
-          // Créer notification
-          await this.createNotification(ad.userId, ad.adId, ad.metrics, ad.reason!);
+          // 1. Récupérer le nom de l'ad depuis stop_loss_settings
+          let adName: string | undefined;
+          try {
+            const supabaseAdmin = getSupabaseAdminClient();
+            const { data: stopLossData, error: fetchError } = await (supabaseAdmin
+              .from('stop_loss_settings') as any)
+              .select('ad_name')
+              .eq('ad_id', ad.adId)
+              .eq('user_id', ad.userId)
+              .maybeSingle();
+            
+            if (fetchError) {
+              console.warn(`⚠️ [Batch] Could not fetch ad name for ${ad.adId}:`, fetchError);
+            } else if (stopLossData) {
+              adName = (stopLossData as any).ad_name || undefined;
+              console.log(`✅ [Batch] Fetched ad name for ${ad.adId}: ${adName}`);
+            }
+          } catch (error) {
+            console.warn(`⚠️ [Batch] Exception fetching ad name for ${ad.adId}:`, error);
+          }
           
-          // Logger l'événement
-          await this.logStopLossEvent(ad.userId, ad.adId, ad.metrics, ad.reason!);
+          // 2. Désactiver le stop-loss pour arrêter le batch (économiser les appels API)
+          try {
+            const supabaseAdmin = getSupabaseAdminClient();
+            const { data: updateData, error: disableError } = await (supabaseAdmin
+              .from('stop_loss_settings') as any)
+              .update({ 
+                enabled: false,
+                updated_at: new Date().toISOString()
+              })
+              .eq('ad_id', ad.adId)
+              .eq('user_id', ad.userId)
+              .select();
+            
+            if (disableError) {
+              console.error(`❌ [Batch] Error disabling stop-loss for ad ${ad.adId}:`, disableError);
+              console.error(`❌ [Batch] Error details:`, JSON.stringify(disableError, null, 2));
+            } else {
+              console.log(`✅ [Batch] Stop-loss disabled for ad ${ad.adId} to stop batch monitoring`);
+              console.log(`✅ [Batch] Updated config:`, JSON.stringify(updateData, null, 2));
+            }
+          } catch (error) {
+            console.error(`⚠️ [Batch] Exception disabling stop-loss for ad ${ad.adId}:`, error);
+            if (error instanceof Error) {
+              console.error(`⚠️ [Batch] Error message:`, error.message);
+              console.error(`⚠️ [Batch] Error stack:`, error.stack);
+            }
+          }
+          
+          // 3. Créer notification avec toutes les données (même si la désactivation a échoué)
+          try {
+            await this.createNotification(
+              ad.userId, 
+              ad.adId, 
+              ad.metrics, 
+              ad.reason!,
+              adName,
+              ad.threshold,
+              ad.actualValue
+            );
+          } catch (notifError) {
+            console.error(`❌ [Batch] Failed to create notification for ad ${ad.adId}:`, notifError);
+            // Continuer même si la notification échoue
+          }
+          
+          // 4. Logger l'événement avec toutes les données pour l'historique admin (même si la notification a échoué)
+          try {
+            await this.logStopLossEvent(
+              ad.userId, 
+              ad.adId, 
+              ad.metrics, 
+              ad.reason!,
+              adName,
+              ad.threshold,
+              ad.actualValue
+            );
+          } catch (logError) {
+            console.error(`❌ [Batch] Failed to log event for ad ${ad.adId}:`, logError);
+            // Continuer même si le log échoue
+          }
+          
+          console.log(`✅ [Batch] Completed all actions for ad ${ad.adId} (pause, disable, notification, log)`);
         } else {
           console.error(`❌ [Batch] Failed to pause ad ${ad.adId}`);
           // Échec, ajouter à retry queue
@@ -552,14 +695,14 @@ class OptimizedStopLossService {
    */
   private async getUserToken(userId: string): Promise<string | null> {
     try {
-      const { data, error } = await supabase
-        .from('access_tokens')
+      const { data, error } = await (supabase
+        .from('access_tokens') as any)
         .select('token')
         .eq('userId', userId)
         .single();
 
       if (error || !data) return null;
-      return data.token;
+      return (data as any).token;
     } catch (error) {
       console.error(`❌ Error fetching token for user ${userId}:`, error);
       return null;
@@ -575,8 +718,8 @@ class OptimizedStopLossService {
     errorMessage: string
   ): Promise<void> {
     try {
-      const { error } = await supabase
-        .from('stop_loss_retry_queue')
+      const { error } = await (supabase
+        .from('stop_loss_retry_queue') as any)
         .upsert({
           user_id: userId,
           ad_id: adId,
@@ -598,56 +741,152 @@ class OptimizedStopLossService {
   }
 
   /**
-   * Créer une notification pour l'utilisateur
+   * Créer une notification pour l'utilisateur avec toutes les données
    */
   private async createNotification(
     userId: string,
     adId: string,
     metrics: AdMetrics,
-    reason: string
+    reason: string,
+    adName?: string,
+    threshold?: number,
+    actualValue?: number
   ): Promise<void> {
     try {
-      await supabase.from('notifications').insert({
+      const triggeredAt = new Date().toISOString();
+      const costPerResult = metrics.results > 0 ? metrics.spend / metrics.results : null;
+      
+      // Utiliser le client admin pour contourner les RLS policies
+      const supabaseAdmin = getSupabaseAdminClient();
+      
+      console.log(`🔔 [Notification] Creating notification for user ${userId}, ad ${adId}`);
+      console.log(`🔔 [Notification] Metrics: spend=${metrics.spend}, results=${metrics.results}`);
+      console.log(`🔔 [Notification] Reason: ${reason}, threshold=${threshold}, actualValue=${actualValue}`);
+      
+      const notificationData = {
         user_id: userId,
         type: 'stop_loss',
-        title: 'Stop Loss Triggered',
-        message: `Ad ${adId} was paused automatically. Reason: ${reason}`,
+        title: '🛑 Stop Loss Déclenché',
+        message: `La publicité "${adName || adId}" a été arrêtée automatiquement.`,
         data: {
           ad_id: adId,
+          ad_name: adName || adId,
           spend: metrics.spend,
           results: metrics.results,
-          reason,
-          triggered_at: new Date().toISOString()
+          cost_per_result: costPerResult,
+          reason: reason,
+          threshold: threshold,
+          actual_value: actualValue || costPerResult || metrics.spend,
+          triggered_at: triggeredAt,
+          triggered_by: 'optimized_batch_service'
         },
         is_read: false
-      });
+      };
+      
+      console.log(`🔔 [Notification] Notification data:`, JSON.stringify(notificationData, null, 2));
+      
+      const { data, error } = await (supabaseAdmin.from('notifications') as any).insert(notificationData).select();
+
+      if (error) {
+        console.error(`❌ [Notification] Error creating notification for ad ${adId}:`, error);
+        console.error(`❌ [Notification] Error details:`, JSON.stringify(error, null, 2));
+        console.error(`❌ [Notification] Error code:`, error.code);
+        console.error(`❌ [Notification] Error message:`, error.message);
+        throw error; // Propager l'erreur pour qu'elle soit gérée par le try-catch parent
+      } else {
+        console.log(`✅ [Notification] Notification created successfully for ad ${adId}`);
+        console.log(`✅ [Notification] Created notification ID:`, data?.[0]?.id);
+        console.log(`✅ [Notification] Notification saved in database:`, JSON.stringify(data?.[0], null, 2));
+        
+        // Vérifier que la notification est bien enregistrée
+        if (data && data[0] && data[0].id) {
+          console.log(`✅ [Notification] ✅ VERIFIED: Notification ${data[0].id} is saved in database`);
+        } else {
+          console.warn(`⚠️ [Notification] WARNING: Notification may not be saved (no ID returned)`);
+        }
+      }
     } catch (error) {
-      console.warn(`⚠️ Error creating notification:`, error);
+      console.error(`⚠️ [Notification] Exception creating notification:`, error);
+      if (error instanceof Error) {
+        console.error(`⚠️ [Notification] Error message:`, error.message);
+        console.error(`⚠️ [Notification] Error stack:`, error.stack);
+      }
     }
   }
 
   /**
-   * Logger l'événement stop-loss
+   * Logger l'événement stop-loss avec toutes les données pour l'historique admin
    */
   private async logStopLossEvent(
     userId: string,
     adId: string,
     metrics: AdMetrics,
-    reason: string
+    reason: string,
+    adName?: string,
+    threshold?: number,
+    actualValue?: number
   ): Promise<void> {
     try {
-      await supabase.from('logs').insert({
+      const triggeredAt = new Date().toISOString();
+      const costPerResult = metrics.results > 0 ? metrics.spend / metrics.results : null;
+      
+      // Utiliser le client admin pour contourner les RLS policies
+      const supabaseAdmin = getSupabaseAdminClient();
+      
+      console.log(`📝 [Log] Logging stop-loss event for user ${userId}, ad ${adId}`);
+      console.log(`📝 [Log] Metrics: spend=${metrics.spend}, results=${metrics.results}`);
+      console.log(`📝 [Log] Reason: ${reason}, threshold=${threshold}, actualValue=${actualValue}`);
+      
+      const logData = {
         user_id: userId,
         action: 'STOP_LOSS_TRIGGERED',
         details: {
+          adId: adId,
           ad_id: adId,
+          adName: adName || adId,
+          ad_name: adName || adId,
           spend: metrics.spend,
           results: metrics.results,
-          reason
+          cost_per_result: costPerResult,
+          reason: reason,
+          threshold: threshold,
+          actualValue: actualValue || costPerResult || metrics.spend,
+          actual_value: actualValue || costPerResult || metrics.spend,
+          triggeredAt: triggeredAt,
+          triggered_at: triggeredAt,
+          triggeredBy: 'optimized_batch_service',
+          triggered_by: 'optimized_batch_service'
         }
-      });
+      };
+      
+      console.log(`📝 [Log] Log data:`, JSON.stringify(logData, null, 2));
+      
+      const { data, error } = await (supabaseAdmin.from('logs') as any).insert(logData).select();
+
+      if (error) {
+        console.error(`❌ [Log] Error logging stop-loss event for ad ${adId}:`, error);
+        console.error(`❌ [Log] Error details:`, JSON.stringify(error, null, 2));
+        console.error(`❌ [Log] Error code:`, error.code);
+        console.error(`❌ [Log] Error message:`, error.message);
+        throw error; // Propager l'erreur pour qu'elle soit gérée par le try-catch parent
+      } else {
+        console.log(`✅ [Log] Stop-loss event logged successfully for ad ${adId}`);
+        console.log(`✅ [Log] Created log ID:`, data?.[0]?.id);
+        console.log(`✅ [Log] Log saved in database:`, JSON.stringify(data?.[0], null, 2));
+        
+        // Vérifier que le log est bien enregistré
+        if (data && data[0] && data[0].id) {
+          console.log(`✅ [Log] ✅ VERIFIED: Log ${data[0].id} is saved in database`);
+        } else {
+          console.warn(`⚠️ [Log] WARNING: Log may not be saved (no ID returned)`);
+        }
+      }
     } catch (error) {
-      console.warn(`⚠️ Error logging stop-loss event:`, error);
+      console.error(`⚠️ [Log] Exception logging stop-loss event:`, error);
+      if (error instanceof Error) {
+        console.error(`⚠️ [Log] Error message:`, error.message);
+        console.error(`⚠️ [Log] Error stack:`, error.stack);
+      }
     }
   }
 

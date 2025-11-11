@@ -177,6 +177,14 @@ export async function toggleMyStopLoss(req: Request, res: Response) {
       action: enabled ? 'enabled' : 'disabled'
     });
 
+    // Redémarrer le service batch si nécessaire (si le stop-loss est activé)
+    if (enabled) {
+      const { optimizedStopLossService } = await import("../services/optimizedStopLossService.js");
+      optimizedStopLossService.restartIfNeeded().catch(err => {
+        console.error('⚠️ Error restarting stop-loss service:', err);
+      });
+    }
+
     return res.json({
       success: true,
       message: `Stop-loss ${enabled ? 'enabled' : 'disabled'} successfully`,

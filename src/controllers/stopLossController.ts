@@ -2,6 +2,7 @@ import { Request, Response } from "../types/express.js";
 import { getFacebookToken, fetchFbGraph } from "./facebookController.js";
 import { createLog } from "../services/loggerService.js";
 import { StopLossSettingsService } from "../services/stopLossSettingsService.js";
+import { optimizedStopLossService } from "../services/optimizedStopLossService.js";
 
 // Configurer le stop loss pour une ad
 export async function configureStopLoss(req: Request, res: Response) {
@@ -64,10 +65,29 @@ export async function configureStopLoss(req: Request, res: Response) {
         }
 
         // Valider les paramètres (seulement si on active)
-        if ((costPerResult === undefined || costPerResult === null) && (zeroResultsSpend === undefined || zeroResultsSpend === null)) {
+        // Vérifier qu'au moins un seuil est activé ET configuré
+        const hasCPR = cprEnabled && costPerResult !== undefined && costPerResult !== null && costPerResult > 0;
+        const hasZeroResults = zeroResultsEnabled && zeroResultsSpend !== undefined && zeroResultsSpend !== null && zeroResultsSpend > 0;
+        
+        if (enabled !== false && !hasCPR && !hasZeroResults) {
             return res.status(400).json({
                 success: false,
-                message: "At least one threshold must be provided: costPerResult or zeroResultsSpend"
+                message: "At least one threshold must be enabled and configured with a value greater than 0. Please enable and configure at least one threshold (Cost Per Result or Zero Results Spend) before activating stop-loss."
+            });
+        }
+        
+        // Validation supplémentaire : Si un seuil est activé, il doit avoir une valeur > 0
+        if (cprEnabled && (costPerResult === undefined || costPerResult === null || costPerResult <= 0)) {
+            return res.status(400).json({
+                success: false,
+                message: "Cost Per Result threshold is enabled but no valid value is provided. Please set a value greater than 0 or disable this threshold."
+            });
+        }
+        
+        if (zeroResultsEnabled && (zeroResultsSpend === undefined || zeroResultsSpend === null || zeroResultsSpend <= 0)) {
+            return res.status(400).json({
+                success: false,
+                message: "Zero Results Spend threshold is enabled but no valid value is provided. Please set a value greater than 0 or disable this threshold."
             });
         }
 
@@ -101,6 +121,13 @@ export async function configureStopLoss(req: Request, res: Response) {
             zeroResultsSpend,
             enabled
         });
+
+        // Redémarrer le service batch si nécessaire (si le stop-loss est activé)
+        if (enabled !== false && result.data?.enabled) {
+          optimizedStopLossService.restartIfNeeded().catch(err => {
+            console.error('⚠️ Error restarting stop-loss service:', err);
+          });
+        }
 
         console.log('Stop loss configuration created successfully for ad:', adId);
 

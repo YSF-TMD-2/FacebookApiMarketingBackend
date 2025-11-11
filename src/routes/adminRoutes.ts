@@ -16,7 +16,8 @@ import {
   toggleUserStatus,
   resetUserPassword,
   getAdDetailsForAdmin,
-  getStopLossHistory
+  getStopLossHistory,
+  deleteStopLossHistoryEntry
 } from '../controllers/adminController.js';
 
 const router = express.Router();
@@ -41,6 +42,7 @@ router.get('/stop-loss-ads', getAllStopLossAds); // Toutes les ads avec stop-los
 
 // Route historique stop-loss
 router.get('/stop-loss-history', getStopLossHistory); // Historique des stop-loss de tous les utilisateurs
+router.delete('/stop-loss-history/:type/:id', deleteStopLossHistoryEntry); // Delete stop-loss history entry
 
 // Routes paramètres système
 router.get('/settings', getSystemSettings);
