@@ -19,8 +19,86 @@ interface ScheduleData {
     lastExecutionDate?: string; // Date de la dernière exécution (pour recurring daily)
 }
 
-// Stockage temporaire des schedules (en production, utiliser une base de données)
+// Stockage temporaire des schedules (cache en mémoire pour performance, mais persistant en DB)
 const schedules: Map<string, ScheduleData[]> = new Map();
+
+// Fonction helper pour convertir ScheduleData vers format DB
+function scheduleDataToDb(schedule: ScheduleData, userId: string): any {
+    return {
+        user_id: userId,
+        ad_id: schedule.adId,
+        schedule_type: schedule.scheduleType,
+        scheduled_date: schedule.scheduledDate,
+        timezone: schedule.timezone,
+        start_minutes: schedule.startMinutes ?? null,
+        end_minutes: schedule.endMinutes ?? null,
+        stop_minutes_1: schedule.stopMinutes1 ?? null,
+        stop_minutes_2: schedule.stopMinutes2 ?? null,
+        start_minutes_2: schedule.startMinutes2 ?? null,
+        executed_at: schedule.executedAt ?? null,
+        last_action: schedule.lastAction ?? null,
+        last_execution_date: schedule.lastExecutionDate ?? null,
+        updated_at: new Date().toISOString()
+    };
+}
+
+// Fonction helper pour convertir format DB vers ScheduleData
+function dbToScheduleData(dbRow: any): ScheduleData {
+    return {
+        adId: dbRow.ad_id,
+        scheduleType: dbRow.schedule_type,
+        scheduledDate: dbRow.scheduled_date,
+        timezone: dbRow.timezone,
+        startMinutes: dbRow.start_minutes ?? undefined,
+        endMinutes: dbRow.end_minutes ?? undefined,
+        stopMinutes1: dbRow.stop_minutes_1 ?? undefined,
+        stopMinutes2: dbRow.stop_minutes_2 ?? undefined,
+        startMinutes2: dbRow.start_minutes_2 ?? undefined,
+        executedAt: dbRow.executed_at ?? undefined,
+        lastAction: dbRow.last_action ?? undefined,
+        lastExecutionDate: dbRow.last_execution_date ?? undefined
+    };
+}
+
+// Charger tous les schedules depuis la base de données au démarrage
+export async function loadSchedulesFromDB() {
+    try {
+        console.log('🔄 Loading schedules from database...');
+        const { data: dbSchedules, error } = await supabase
+            .from('schedules')
+            .select('*');
+        
+        if (error) {
+            console.error('❌ Error loading schedules from DB:', error);
+            // Si la table n'existe pas encore, on continue sans erreur
+            if (error.code === 'PGRST116' || error.message?.includes('does not exist')) {
+                console.log('⚠️ Schedules table does not exist yet. It will be created on first schedule creation.');
+                return;
+            }
+            throw error;
+        }
+        
+        if (!dbSchedules || dbSchedules.length === 0) {
+            console.log('✅ No schedules found in database');
+            return;
+        }
+        
+        // Grouper par user_id et charger dans la Map
+        schedules.clear();
+        for (const dbSchedule of dbSchedules) {
+            const userId = dbSchedule.user_id;
+            if (!schedules.has(userId)) {
+                schedules.set(userId, []);
+            }
+            schedules.get(userId)!.push(dbToScheduleData(dbSchedule));
+        }
+        
+        console.log(`✅ Loaded ${dbSchedules.length} schedule(s) from database for ${schedules.size} user(s)`);
+    } catch (error) {
+        console.error('❌ Error in loadSchedulesFromDB:', error);
+        // Ne pas bloquer le démarrage si le chargement échoue
+    }
+}
 
 // Fonction pour vérifier si un schedule doit être exécuté
 function checkIfScheduleShouldExecute(schedule: ScheduleData, now: Date): { shouldExecute: boolean; action?: string } {
@@ -228,6 +306,29 @@ export async function createSchedule(req: Request, res: Response) {
             // Continue without ad details
         }
 
+        // Si c'est un schedule récurrent, supprimer l'ancien schedule récurrent pour cette ad
+        if (scheduleType === 'RECURRING_DAILY') {
+            try {
+                // Supprimer de la DB
+                await supabase
+                    .from('schedules')
+                    .delete()
+                    .eq('user_id', userId)
+                    .eq('ad_id', adId)
+                    .eq('schedule_type', 'RECURRING_DAILY');
+                
+                // Supprimer de la mémoire
+                const userSchedules = schedules.get(userId) || [];
+                const filteredSchedules = userSchedules.filter(s => 
+                    !(s.adId === adId && s.scheduleType === 'RECURRING_DAILY')
+                );
+                schedules.set(userId, filteredSchedules);
+                console.log('✅ Removed existing recurring schedule before creating new one');
+            } catch (deleteError) {
+                console.error('⚠️ Error removing existing recurring schedule:', deleteError);
+            }
+        }
+
         // Créer l'objet schedule
         const scheduleData: ScheduleData = {
             adId,
@@ -241,12 +342,37 @@ export async function createSchedule(req: Request, res: Response) {
             startMinutes2
         };
 
-        // Stocker le schedule en mémoire
+        // Sauvegarder dans la base de données
+        try {
+            const dbData = scheduleDataToDb(scheduleData, userId);
+            const { data: insertedSchedule, error: dbError } = await supabase
+                .from('schedules')
+                .insert(dbData)
+                .select()
+                .single();
+            
+            if (dbError) {
+                // Si la table n'existe pas, on continue avec le stockage en mémoire uniquement
+                if (dbError.code === 'PGRST116' || dbError.message?.includes('does not exist')) {
+                    console.warn('⚠️ Schedules table does not exist. Please create it in Supabase. Using memory-only storage.');
+                } else {
+                    console.error('❌ Error saving schedule to DB:', dbError);
+                    throw dbError;
+                }
+            } else {
+                console.log('✅ Schedule saved to database');
+            }
+        } catch (dbError: any) {
+            console.error('❌ Error persisting schedule to DB:', dbError);
+            // Continue même si la DB échoue (fallback en mémoire)
+        }
+
+        // Stocker le schedule en mémoire (cache)
         if (!schedules.has(userId)) {
             schedules.set(userId, []);
         }
         schedules.get(userId)!.push(scheduleData);
-        console.log('✅ Schedule stored in memory');
+        console.log('✅ Schedule stored in memory cache');
 
         // Log de création avec informations détaillées
         try {
@@ -493,23 +619,80 @@ export async function executeSchedules() {
                                 schedule.lastAction = actionType;
                                 schedule.executedAt = now.toISOString();
                                 console.log(`✅ Updated recurring schedule: lastAction=${actionType}, lastExecutionDate=${currentDate}`);
+                                
+                                // Mettre à jour dans la DB
+                                try {
+                                    await supabase
+                                        .from('schedules')
+                                        .update({
+                                            last_action: actionType,
+                                            last_execution_date: currentDate,
+                                            executed_at: now.toISOString(),
+                                            updated_at: now.toISOString()
+                                        })
+                                        .eq('user_id', userId)
+                                        .eq('ad_id', schedule.adId)
+                                        .eq('schedule_type', 'RECURRING_DAILY');
+                                    console.log('✅ Recurring schedule updated in database');
+                                } catch (dbError) {
+                                    console.error('⚠️ Error updating recurring schedule in DB:', dbError);
+                                }
                             } else if (schedule.startMinutes !== undefined && schedule.endMinutes !== undefined) {
                                 // Pour les schedules avec plages horaires (ancien système)
                                 console.log('📅 Schedule with time range - keeping for end time execution');
                                 schedule.executedAt = now.toISOString();
                                 schedule.lastAction = actionType;
                                 
+                                // Mettre à jour dans la DB
+                                try {
+                                    await supabase
+                                        .from('schedules')
+                                        .update({
+                                            executed_at: now.toISOString(),
+                                            last_action: actionType,
+                                            updated_at: now.toISOString()
+                                        })
+                                        .eq('user_id', userId)
+                                        .eq('ad_id', schedule.adId);
+                                } catch (dbError) {
+                                    console.error('⚠️ Error updating schedule in DB:', dbError);
+                                }
+                                
                                 // Si c'est l'heure de fin, supprimer le schedule
                                 if (actionType === 'STOP') {
                                     console.log('📅 Time range completed - removing schedule');
                                     const filteredSchedules = userSchedules.filter(s => s !== schedule);
                                     schedules.set(userId, filteredSchedules);
+                                    
+                                    // Supprimer de la DB
+                                    try {
+                                        await supabase
+                                            .from('schedules')
+                                            .delete()
+                                            .eq('user_id', userId)
+                                            .eq('ad_id', schedule.adId);
+                                        console.log('✅ Schedule removed from database');
+                                    } catch (dbError) {
+                                        console.error('⚠️ Error removing schedule from DB:', dbError);
+                                    }
                                 }
                             } else {
                                 // Supprimer le schedule exécuté (schedule ponctuel)
                                 console.log('📅 One-time schedule - removing after execution');
                                 const filteredSchedules = userSchedules.filter(s => s !== schedule);
                                 schedules.set(userId, filteredSchedules);
+                                
+                                // Supprimer de la DB
+                                try {
+                                    await supabase
+                                        .from('schedules')
+                                        .delete()
+                                        .eq('user_id', userId)
+                                        .eq('ad_id', schedule.adId);
+                                    console.log('✅ One-time schedule removed from database');
+                                } catch (dbError) {
+                                    console.error('⚠️ Error removing schedule from DB:', dbError);
+                                }
                             }
                         } else {
                             console.error('❌ Failed to execute schedule for ad:', schedule.adId);
@@ -535,7 +718,12 @@ export async function executeSchedules() {
 }
 
 // Démarrer le service de schedules (appelé toutes les minutes)
-export function startScheduleService() {
+export async function startScheduleService() {
+    console.log('🚀 Starting schedule service...');
+    
+    // Charger les schedules depuis la base de données au démarrage
+    await loadSchedulesFromDB();
+    
     console.log('🚀 Schedule service started - checking every 5 seconds');
     
     // Exécuter toutes les 5 secondes pour les tests (changer à 60000 pour la production)
@@ -1066,6 +1254,165 @@ export async function getAdSchedules(req: Request, res: Response) {
     }
 }
 
+// Fonction pour récupérer toutes les ads avec des schedules actifs
+export async function getAllScheduledAds(req: Request, res: Response) {
+    try {
+        const userId = req.user!.id;
+        
+        console.log('🔍 Getting all scheduled ads for user:', userId);
+        
+        // Récupérer tous les schedules depuis la DB
+        let dbSchedules: any[] = [];
+        try {
+            const { data, error } = await supabase
+                .from('schedules')
+                .select('*')
+                .eq('user_id', userId);
+            
+            if (error) {
+                console.error('⚠️ Error loading schedules from DB:', error);
+                // Fallback: utiliser la mémoire
+                const userSchedules = schedules.get(userId) || [];
+                dbSchedules = userSchedules.map(s => ({
+                    ad_id: s.adId,
+                    schedule_type: s.scheduleType,
+                    scheduled_date: s.scheduledDate,
+                    timezone: s.timezone,
+                    start_minutes: s.startMinutes,
+                    end_minutes: s.endMinutes,
+                    stop_minutes_1: s.stopMinutes1,
+                    stop_minutes_2: s.stopMinutes2,
+                    start_minutes_2: s.startMinutes2,
+                    executed_at: s.executedAt,
+                    last_action: s.lastAction,
+                    last_execution_date: s.lastExecutionDate
+                }));
+            } else {
+                dbSchedules = data || [];
+            }
+        } catch (dbError) {
+            console.error('⚠️ Error loading schedules from DB:', dbError);
+            // Fallback: utiliser la mémoire
+            const userSchedules = schedules.get(userId) || [];
+            dbSchedules = userSchedules.map(s => ({
+                ad_id: s.adId,
+                schedule_type: s.scheduleType,
+                scheduled_date: s.scheduledDate,
+                timezone: s.timezone,
+                start_minutes: s.startMinutes,
+                end_minutes: s.endMinutes,
+                stop_minutes_1: s.stopMinutes1,
+                stop_minutes_2: s.stopMinutes2,
+                start_minutes_2: s.startMinutes2,
+                executed_at: s.executedAt,
+                last_action: s.lastAction,
+                last_execution_date: s.lastExecutionDate
+            }));
+        }
+        
+        if (dbSchedules.length === 0) {
+            return res.json({
+                success: true,
+                data: {
+                    ads: [],
+                    total: 0
+                }
+            });
+        }
+        
+        // Récupérer le token Facebook
+        const tokenRow = await getFacebookToken(userId);
+        if (!tokenRow || !tokenRow.token) {
+            return res.status(400).json({
+                success: false,
+                message: "No Facebook token found. Please reconnect your Facebook account."
+            });
+        }
+        
+        // Grouper les schedules par ad_id
+        const schedulesByAdId = new Map<string, any[]>();
+        for (const schedule of dbSchedules) {
+            const adId = schedule.ad_id;
+            if (!schedulesByAdId.has(adId)) {
+                schedulesByAdId.set(adId, []);
+            }
+            schedulesByAdId.get(adId)!.push(schedule);
+        }
+        
+        // Récupérer les détails de chaque ad depuis Facebook
+        const adsWithSchedules = [];
+        for (const [adId, adSchedules] of schedulesByAdId.entries()) {
+            try {
+                // Récupérer les détails de base de l'ad
+                const endpoint = `${adId}?fields=id,name,status,created_time,updated_time,adset_id,campaign_id`;
+                const adDetails = await fetchFbGraph(tokenRow.token, endpoint);
+                
+                // Formater les schedules pour cette ad
+                const formattedSchedules = adSchedules.map(s => ({
+                    id: s.id, // Inclure l'ID du schedule
+                    scheduleType: s.schedule_type,
+                    scheduledDate: s.scheduled_date,
+                    timezone: s.timezone,
+                    startMinutes: s.start_minutes,
+                    endMinutes: s.end_minutes,
+                    stopMinutes1: s.stop_minutes_1,
+                    stopMinutes2: s.stop_minutes_2,
+                    startMinutes2: s.start_minutes_2,
+                    executedAt: s.executed_at,
+                    lastAction: s.last_action,
+                    lastExecutionDate: s.last_execution_date,
+                    isRecurring: s.schedule_type === 'RECURRING_DAILY',
+                    startTime: s.start_minutes ? `${Math.floor(s.start_minutes / 60)}:${(s.start_minutes % 60).toString().padStart(2, '0')}` : null,
+                    endTime: s.end_minutes ? `${Math.floor(s.end_minutes / 60)}:${(s.end_minutes % 60).toString().padStart(2, '0')}` : null,
+                    stopTime1: s.stop_minutes_1 ? `${Math.floor(s.stop_minutes_1 / 60)}:${(s.stop_minutes_1 % 60).toString().padStart(2, '0')}` : null,
+                    stopTime2: s.stop_minutes_2 ? `${Math.floor(s.stop_minutes_2 / 60)}:${(s.stop_minutes_2 % 60).toString().padStart(2, '0')}` : null,
+                    startTime2: s.start_minutes_2 ? `${Math.floor(s.start_minutes_2 / 60)}:${(s.start_minutes_2 % 60).toString().padStart(2, '0')}` : null
+                }));
+                
+                adsWithSchedules.push({
+                    ...adDetails,
+                    schedules: formattedSchedules,
+                    totalSchedules: formattedSchedules.length
+                });
+            } catch (adError: any) {
+                console.error(`⚠️ Error fetching ad ${adId}:`, adError);
+                // Inclure quand même l'ad avec les schedules même si les détails ne peuvent pas être récupérés
+                adsWithSchedules.push({
+                    id: adId,
+                    name: 'Unknown',
+                    status: 'UNKNOWN',
+                    error: adError.message,
+                    schedules: adSchedules.map(s => ({
+                        id: s.id, // Inclure l'ID du schedule
+                        scheduleType: s.schedule_type,
+                        scheduledDate: s.scheduled_date,
+                        timezone: s.timezone,
+                        isRecurring: s.schedule_type === 'RECURRING_DAILY'
+                    })),
+                    totalSchedules: adSchedules.length
+                });
+            }
+        }
+        
+        console.log(`✅ Found ${adsWithSchedules.length} ad(s) with active schedules`);
+        
+        return res.json({
+            success: true,
+            data: {
+                ads: adsWithSchedules,
+                total: adsWithSchedules.length
+            }
+        });
+        
+    } catch (error: any) {
+        console.error('❌ Error getting scheduled ads:', error);
+        return res.status(500).json({
+            success: false,
+            message: error.message || "Server error"
+        });
+    }
+}
+
 // Fonction pour supprimer les schedules d'une ad
 export async function deleteAdSchedules(req: Request, res: Response) {
     try {
@@ -1077,7 +1424,24 @@ export async function deleteAdSchedules(req: Request, res: Response) {
         const userSchedules = schedules.get(userId) || [];
         const initialCount = userSchedules.length;
         
-        // Filter out all schedules for this ad
+        // Supprimer de la base de données
+        try {
+            const { error: dbError } = await supabase
+                .from('schedules')
+                .delete()
+                .eq('user_id', userId)
+                .eq('ad_id', adId);
+            
+            if (dbError) {
+                console.error('⚠️ Error deleting schedules from DB:', dbError);
+            } else {
+                console.log('✅ Schedules deleted from database');
+            }
+        } catch (dbError) {
+            console.error('⚠️ Error deleting schedules from DB:', dbError);
+        }
+        
+        // Filter out all schedules for this ad (mémoire)
         const filteredSchedules = userSchedules.filter(s => s.adId !== adId);
         const deletedCount = initialCount - filteredSchedules.length;
         
@@ -1097,6 +1461,95 @@ export async function deleteAdSchedules(req: Request, res: Response) {
         
     } catch (error: any) {
         console.error('❌ Error deleting ad schedules:', error);
+        return res.status(500).json({
+            success: false,
+            message: error.message || "Server error"
+        });
+    }
+}
+
+// Fonction pour supprimer un schedule spécifique par son ID
+export async function deleteSchedule(req: Request, res: Response) {
+    try {
+        const userId = req.user!.id;
+        const { scheduleId } = req.params;
+        
+        console.log('🗑️ Deleting schedule:', scheduleId);
+        
+        // Supprimer de la base de données
+        try {
+            const { data: deletedSchedule, error: dbError } = await supabase
+                .from('schedules')
+                .delete()
+                .eq('id', scheduleId)
+                .eq('user_id', userId)
+                .select()
+                .single();
+            
+            if (dbError) {
+                console.error('⚠️ Error deleting schedule from DB:', dbError);
+                return res.status(500).json({
+                    success: false,
+                    message: "Failed to delete schedule from database"
+                });
+            }
+            
+            if (!deletedSchedule) {
+                return res.status(404).json({
+                    success: false,
+                    message: "Schedule not found"
+                });
+            }
+            
+            console.log('✅ Schedule deleted from database');
+            
+            // Supprimer de la mémoire
+            const userSchedules = schedules.get(userId) || [];
+            const filteredSchedules = userSchedules.filter(s => {
+                // Pour les schedules en mémoire, on ne peut pas les matcher par ID
+                // On doit les matcher par les propriétés du schedule supprimé
+                return !(
+                    s.adId === deletedSchedule.ad_id &&
+                    s.scheduleType === deletedSchedule.schedule_type &&
+                    s.scheduledDate === deletedSchedule.scheduled_date &&
+                    s.timezone === deletedSchedule.timezone
+                );
+            });
+            
+            schedules.set(userId, filteredSchedules);
+            console.log('✅ Schedule removed from memory cache');
+            
+            // Log de suppression
+            try {
+                await createLog(userId, "SCHEDULE_DELETE", {
+                    scheduleId,
+                    adId: deletedSchedule.ad_id,
+                    scheduleType: deletedSchedule.schedule_type,
+                    deletedAt: new Date().toISOString()
+                });
+            } catch (logError) {
+                console.error('⚠️ Error creating delete log:', logError);
+            }
+            
+            return res.json({
+                success: true,
+                message: "Schedule deleted successfully",
+                data: {
+                    scheduleId,
+                    adId: deletedSchedule.ad_id
+                }
+            });
+            
+        } catch (dbError: any) {
+            console.error('❌ Error deleting schedule:', dbError);
+            return res.status(500).json({
+                success: false,
+                message: dbError.message || "Server error"
+            });
+        }
+        
+    } catch (error: any) {
+        console.error('❌ Error in delete schedule:', error);
         return res.status(500).json({
             success: false,
             message: error.message || "Server error"

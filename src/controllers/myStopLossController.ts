@@ -135,29 +135,40 @@ export async function toggleMyStopLoss(req: Request, res: Response) {
     }
 
     // Vérifier que le stop-loss existe et appartient à l'utilisateur
-    const { data: existing, error: checkError } = await supabase
+    // Récupérer la configuration la plus récente (active ou inactive) pour cette ad
+    const { data: existingConfigs, error: checkError } = await supabase
       .from('stop_loss_settings')
       .select('*')
       .eq('user_id', userId)
       .eq('ad_id', adId)
-      .single();
+      .order('created_at', { ascending: false })
+      .limit(1);
 
-    if (checkError || !existing) {
+    if (checkError) {
+      console.error('❌ Error checking stop-loss:', checkError);
+      return res.status(500).json({
+        success: false,
+        message: "Failed to check stop-loss configuration"
+      });
+    }
+
+    const existing = existingConfigs && existingConfigs.length > 0 ? existingConfigs[0] : null;
+
+    if (!existing) {
       return res.status(404).json({
         success: false,
         message: "Stop-loss not found or access denied"
       });
     }
 
-    // Mettre à jour le statut enabled
+    // Mettre à jour l'entrée existante (la contrainte unique empêche d'en créer une nouvelle)
     const { data, error } = await supabase
       .from('stop_loss_settings')
       .update({
         enabled: enabled,
         updated_at: new Date().toISOString()
       })
-      .eq('user_id', userId)
-      .eq('ad_id', adId)
+      .eq('id', existing.id)
       .select()
       .single();
 

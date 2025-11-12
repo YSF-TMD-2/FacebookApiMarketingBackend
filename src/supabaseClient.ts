@@ -209,6 +209,62 @@ export interface Database {
           updated_at?: string;
         };
       };
+      schedules: {
+        Row: {
+          id: number;
+          user_id: string;
+          ad_id: string;
+          schedule_type: 'START' | 'STOP' | 'PAUSE' | 'RECURRING_DAILY';
+          scheduled_date: string;
+          timezone: string;
+          start_minutes: number | null;
+          end_minutes: number | null;
+          stop_minutes_1: number | null;
+          stop_minutes_2: number | null;
+          start_minutes_2: number | null;
+          executed_at: string | null;
+          last_action: string | null;
+          last_execution_date: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: number;
+          user_id: string;
+          ad_id: string;
+          schedule_type: 'START' | 'STOP' | 'PAUSE' | 'RECURRING_DAILY';
+          scheduled_date: string;
+          timezone: string;
+          start_minutes?: number | null;
+          end_minutes?: number | null;
+          stop_minutes_1?: number | null;
+          stop_minutes_2?: number | null;
+          start_minutes_2?: number | null;
+          executed_at?: string | null;
+          last_action?: string | null;
+          last_execution_date?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: number;
+          user_id?: string;
+          ad_id?: string;
+          schedule_type?: 'START' | 'STOP' | 'PAUSE' | 'RECURRING_DAILY';
+          scheduled_date?: string;
+          timezone?: string;
+          start_minutes?: number | null;
+          end_minutes?: number | null;
+          stop_minutes_1?: number | null;
+          stop_minutes_2?: number | null;
+          start_minutes_2?: number | null;
+          executed_at?: string | null;
+          last_action?: string | null;
+          last_execution_date?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+      };
     };
     Functions: {
       create_stop_loss_event: {

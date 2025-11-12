@@ -35,49 +35,44 @@ export class StopLossSettingsService {
     try {
       console.log(`🔧 Enabling stop loss for ad ${adId} (user: ${userId})`);
 
-      // Vérifier si l'annonce existe déjà
+      // Vérifier si l'annonce existe déjà (la contrainte unique empêche plusieurs entrées)
       const { data: existing, error: fetchError } = await supabase
         .from('stop_loss_settings')
         .select('*')
         .eq('user_id', userId)
         .eq('ad_id', adId)
-        .single();
+        .maybeSingle();
 
       if (fetchError && fetchError.code !== 'PGRST116') {
         throw fetchError;
       }
 
       if (existing) {
-        // Mettre à jour l'enregistrement existant
-        // Construire l'objet de mise à jour de manière conditionnelle pour éviter les erreurs si les colonnes n'existent pas
+        // Mettre à jour l'entrée existante (la contrainte unique empêche d'en créer une nouvelle)
         const updateData: any = {
+          account_id: accountId,
+          ad_name: adName || existing.ad_name,
           enabled: enabled,
-          ad_name: adName,
-          cost_per_result_threshold: thresholds?.costPerResult || null,
-          zero_results_spend_threshold: thresholds?.zeroResultsSpend || null,
           updated_at: new Date().toISOString()
         };
 
-        // Ajouter les nouveaux champs seulement s'ils sont définis (pour éviter les erreurs si les colonnes n'existent pas encore)
+        // Mettre à jour les seuils seulement s'ils sont fournis
+        if (thresholds?.costPerResult !== undefined) {
+          updateData.cost_per_result_threshold = thresholds.costPerResult;
+        }
+        if (thresholds?.zeroResultsSpend !== undefined) {
+          updateData.zero_results_spend_threshold = thresholds.zeroResultsSpend;
+        }
+
+        // Mettre à jour les flags d'activation
         if (thresholds?.cprEnabled !== undefined) {
           updateData.cpr_enabled = thresholds.cprEnabled;
-        } else if (existing.cpr_enabled !== undefined && existing.cpr_enabled !== null) {
-          updateData.cpr_enabled = existing.cpr_enabled;
-        } else {
-          // Par défaut true si pas défini
-          updateData.cpr_enabled = true;
         }
-
         if (thresholds?.zeroResultsEnabled !== undefined) {
           updateData.zero_results_enabled = thresholds.zeroResultsEnabled;
-        } else if (existing.zero_results_enabled !== undefined && existing.zero_results_enabled !== null) {
-          updateData.zero_results_enabled = existing.zero_results_enabled;
-        } else {
-          // Par défaut true si pas défini
-          updateData.zero_results_enabled = true;
         }
 
-        console.log('🔧 Updating stop loss with data:', updateData);
+        console.log(`📝 Updating existing stop-loss entry for ad ${adId}`);
 
         const { data, error } = await supabase
           .from('stop_loss_settings')
@@ -87,30 +82,11 @@ export class StopLossSettingsService {
           .single();
 
         if (error) {
-          console.error('❌ Error updating stop loss:', error);
-          // Si l'erreur est due à des colonnes manquantes, essayer sans ces colonnes
-          if (error.message && (error.message.includes('column') || error.message.includes('does not exist'))) {
-            console.warn('⚠️ Columns cpr_enabled or zero_results_enabled may not exist, trying without them');
-            const fallbackData: any = {
-              enabled: enabled,
-              ad_name: adName,
-              cost_per_result_threshold: thresholds?.costPerResult || null,
-              zero_results_spend_threshold: thresholds?.zeroResultsSpend || null,
-              updated_at: new Date().toISOString()
-            };
-            const { data: fallbackResult, error: fallbackError } = await supabase
-              .from('stop_loss_settings')
-              .update(fallbackData)
-              .eq('id', existing.id)
-              .select()
-              .single();
-            if (fallbackError) throw fallbackError;
-            return { success: true, data: fallbackResult };
-          }
+          console.error('❌ Error updating stop loss entry:', error);
           throw error;
         }
 
-        console.log(`✅ Stop loss updated for ad ${adId}`);
+        console.log(`✅ Stop-loss entry updated for ad ${adId}`);
         return { success: true, data };
       } else {
         // Créer un nouvel enregistrement
@@ -147,6 +123,50 @@ export class StopLossSettingsService {
 
         if (error) {
           console.error('❌ Error creating stop loss:', error);
+          
+          // Si l'erreur est due à la contrainte unique, mettre à jour l'entrée existante
+          if (error.code === '23505' || (error.message && error.message.includes('duplicate key'))) {
+            console.log('⚠️ Duplicate key detected, updating existing entry instead');
+            const { data: existingEntry } = await supabase
+              .from('stop_loss_settings')
+              .select('*')
+              .eq('user_id', userId)
+              .eq('ad_id', adId)
+              .maybeSingle();
+            
+            if (existingEntry) {
+              const updateData: any = {
+                account_id: accountId,
+                ad_name: adName || existingEntry.ad_name,
+                enabled: enabled,
+                updated_at: new Date().toISOString()
+              };
+
+              if (thresholds?.costPerResult !== undefined) {
+                updateData.cost_per_result_threshold = thresholds.costPerResult;
+              }
+              if (thresholds?.zeroResultsSpend !== undefined) {
+                updateData.zero_results_spend_threshold = thresholds.zeroResultsSpend;
+              }
+              if (thresholds?.cprEnabled !== undefined) {
+                updateData.cpr_enabled = thresholds.cprEnabled;
+              }
+              if (thresholds?.zeroResultsEnabled !== undefined) {
+                updateData.zero_results_enabled = thresholds.zeroResultsEnabled;
+              }
+
+              const { data: updatedData, error: updateError } = await supabase
+                .from('stop_loss_settings')
+                .update(updateData)
+                .eq('id', existingEntry.id)
+                .select()
+                .single();
+
+              if (updateError) throw updateError;
+              return { success: true, data: updatedData };
+            }
+          }
+          
           // Si l'erreur est due à des colonnes manquantes, essayer sans ces colonnes
           if (error.message && (error.message.includes('column') || error.message.includes('does not exist'))) {
             console.warn('⚠️ Columns cpr_enabled or zero_results_enabled may not exist, trying without them');
@@ -184,6 +204,8 @@ export class StopLossSettingsService {
 
   /**
    * Désactiver le stop loss pour une annonce
+   * IMPORTANT: Archive les configurations (enabled: false) au lieu de les supprimer
+   * pour garder l'historique complet même quand l'ad est désactivée
    */
   static async disableStopLoss(
     userId: string,
@@ -192,15 +214,21 @@ export class StopLossSettingsService {
     try {
       console.log(`🔧 Disabling stop loss for ad ${adId} (user: ${userId})`);
 
+      // IMPORTANT: Au lieu de supprimer, on archive toutes les configurations actives
+      // en les marquant comme enabled: false pour garder l'historique
       const { error } = await supabase
         .from('stop_loss_settings')
-        .delete()
+        .update({ 
+          enabled: false, 
+          updated_at: new Date().toISOString() 
+        })
         .eq('user_id', userId)
-        .eq('ad_id', adId);
+        .eq('ad_id', adId)
+        .eq('enabled', true); // Seulement les configurations actives
 
       if (error) throw error;
 
-      console.log(`✅ Stop loss disabled for ad ${adId}`);
+      console.log(`✅ Stop loss archived (disabled) for ad ${adId} - history preserved`);
       return { success: true };
     } catch (error) {
       console.error('❌ Error disabling stop loss:', error);
@@ -213,27 +241,55 @@ export class StopLossSettingsService {
 
   /**
    * Obtenir l'état du stop loss pour une annonce
+   * Retourne la configuration active la plus récente, ou la plus récente si aucune n'est active
    */
   static async getStopLossStatus(
     userId: string,
     adId: string
   ): Promise<{ success: boolean; enabled: boolean; data?: StopLossSettings; error?: string }> {
     try {
-      const { data, error } = await supabase
+      // D'abord chercher une configuration active
+      const { data: activeConfig, error: activeError } = await supabase
         .from('stop_loss_settings')
         .select('*')
         .eq('user_id', userId)
         .eq('ad_id', adId)
-        .single();
+        .eq('enabled', true)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
 
-      if (error && error.code !== 'PGRST116') {
-        throw error;
+      if (activeError && activeError.code !== 'PGRST116') {
+        throw activeError;
+      }
+
+      // Si on a une configuration active, la retourner
+      if (activeConfig) {
+        return { 
+          success: true, 
+          enabled: true,
+          data: activeConfig
+        };
+      }
+
+      // Sinon, chercher la configuration la plus récente (même inactive)
+      const { data: latestConfig, error: latestError } = await supabase
+        .from('stop_loss_settings')
+        .select('*')
+        .eq('user_id', userId)
+        .eq('ad_id', adId)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (latestError && latestError.code !== 'PGRST116') {
+        throw latestError;
       }
 
       return { 
         success: true, 
-        enabled: !!data?.enabled,
-        data: data || undefined
+        enabled: !!latestConfig?.enabled,
+        data: latestConfig || undefined
       };
     } catch (error) {
       console.error('❌ Error getting stop loss status:', error);
@@ -273,6 +329,7 @@ export class StopLossSettingsService {
 
   /**
    * Mettre à jour les seuils pour une annonce
+   * IMPORTANT: Crée une nouvelle entrée pour garder l'historique complet
    */
   static async updateThresholds(
     userId: string,
@@ -285,34 +342,55 @@ export class StopLossSettingsService {
     }
   ): Promise<{ success: boolean; data?: StopLossSettings; error?: string }> {
     try {
-      const updateData: any = {
-        updated_at: new Date().toISOString()
-      };
-      
-      if (thresholds.costPerResult !== undefined) {
-        updateData.cost_per_result_threshold = thresholds.costPerResult || null;
-      }
-      if (thresholds.zeroResultsSpend !== undefined) {
-        updateData.zero_results_spend_threshold = thresholds.zeroResultsSpend || null;
-      }
-      if (thresholds.cprEnabled !== undefined) {
-        updateData.cpr_enabled = thresholds.cprEnabled;
-      }
-      if (thresholds.zeroResultsEnabled !== undefined) {
-        updateData.zero_results_enabled = thresholds.zeroResultsEnabled;
-      }
-      
-      const { data, error } = await supabase
+      // Récupérer la configuration existante (la contrainte unique garantit qu'il n'y en a qu'une)
+      const { data: existing, error: fetchError } = await supabase
         .from('stop_loss_settings')
-        .update(updateData)
+        .select('*')
         .eq('user_id', userId)
         .eq('ad_id', adId)
-        .select()
-        .single();
+        .maybeSingle();
 
-      if (error) throw error;
+      if (fetchError && fetchError.code !== 'PGRST116') {
+        throw fetchError;
+      }
 
-      return { success: true, data };
+      if (existing) {
+        // Mettre à jour l'entrée existante (la contrainte unique empêche d'en créer une nouvelle)
+        const updateData: any = {
+          updated_at: new Date().toISOString()
+        };
+
+        if (thresholds.costPerResult !== undefined) {
+          updateData.cost_per_result_threshold = thresholds.costPerResult;
+        }
+        if (thresholds.zeroResultsSpend !== undefined) {
+          updateData.zero_results_spend_threshold = thresholds.zeroResultsSpend;
+        }
+        if (thresholds.cprEnabled !== undefined) {
+          updateData.cpr_enabled = thresholds.cprEnabled;
+        }
+        if (thresholds.zeroResultsEnabled !== undefined) {
+          updateData.zero_results_enabled = thresholds.zeroResultsEnabled;
+        }
+
+        const { data, error } = await supabase
+          .from('stop_loss_settings')
+          .update(updateData)
+          .eq('id', existing.id)
+          .select()
+          .single();
+
+        if (error) throw error;
+
+        console.log(`✅ Threshold configuration updated for ad ${adId}`);
+        return { success: true, data };
+      } else {
+        // Pas de configuration existante, créer une nouvelle
+        return { 
+          success: false, 
+          error: 'No existing stop-loss configuration found to update' 
+        };
+      }
     } catch (error) {
       console.error('❌ Error updating thresholds:', error);
       return { 

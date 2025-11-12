@@ -2227,7 +2227,9 @@ app.listen(PORT, () => {
   
   // Démarrer les services
   console.log('🚀 Starting background services...');
-  startScheduleService();
+  startScheduleService().catch(err => {
+    console.error('❌ Error starting schedule service:', err);
+  });
   
   // ❌ Service traditionnel désactivé - Utilisation du service optimisé uniquement
   // startStopLossService();

@@ -1020,10 +1020,9 @@ export async function getStopLossHistory(req: ExpressRequest, res: Response) {
     const { userId, limit = 100, offset = 0 } = req.query;
     const supabaseAdmin = getSupabaseAdminClient();
 
-    console.log('🔍 [ADMIN] Fetching stop-loss history (triggered events only)', { userId, limit, offset });
+    console.log('🔍 [ADMIN] Fetching stop-loss history (triggered events + configurations)', { userId, limit, offset });
 
-    // Récupérer UNIQUEMENT les logs de déclenchement (STOP_LOSS_TRIGGERED) - les événements réels
-    // L'historique doit afficher seulement les stop-loss qui ont été réellement déclenchés
+    // Récupérer les logs de déclenchement (STOP_LOSS_TRIGGERED) - les événements réels
     let logsQuery = supabaseAdmin
       .from('logs')
       .select('*')
@@ -1036,11 +1035,41 @@ export async function getStopLossHistory(req: ExpressRequest, res: Response) {
 
     const { data: logs, error: logsError } = await logsQuery;
 
+    // Récupérer TOUTES les configurations stop-loss (actives et inactives) pour visibilité permanente
+    let configsQuery = supabaseAdmin
+      .from('stop_loss_settings')
+      .select('*')
+      .order('created_at', { ascending: false });
+
+    if (userId) {
+      configsQuery = configsQuery.eq('user_id', userId);
+    }
+
+    const { data: configs, error: configsError } = await configsQuery;
+
     if (logsError) {
       console.error('❌ Error fetching stop-loss logs:', logsError);
       return res.status(500).json({
         success: false,
         message: "Failed to fetch stop-loss history"
+      });
+    }
+
+    if (configsError) {
+      console.error('❌ Error fetching stop-loss configurations:', configsError);
+      // Ne pas échouer complètement, continuer avec les logs seulement
+    }
+
+    // Récupérer les informations utilisateur (nécessaire pour enrichir les configurations et les logs)
+    const { data: allUsers, error: usersError } = await supabaseAdmin.rpc('get_all_users');
+    const usersMap = new Map();
+    if (allUsers && Array.isArray(allUsers)) {
+      allUsers.forEach((user: any) => {
+        usersMap.set(user.id, {
+          email: user.email || null,
+          name: user.user_metadata?.full_name || user.user_metadata?.name || null,
+          role: user.role || 'user'
+        });
       });
     }
 
@@ -1060,21 +1089,48 @@ export async function getStopLossHistory(req: ExpressRequest, res: Response) {
       console.warn('⚠️ Could not fetch batch config:', error);
     }
 
-    // Récupérer les informations utilisateur
-    const { data: allUsers, error: usersError } = await supabaseAdmin.rpc('get_all_users');
-    const usersMap = new Map();
-    if (allUsers && Array.isArray(allUsers)) {
-      allUsers.forEach((user: any) => {
-        usersMap.set(user.id, {
-          email: user.email || null,
-          name: user.user_metadata?.full_name || user.user_metadata?.name || null,
-          role: user.role || 'user'
-        });
-      });
-    }
+    // Enrichir les configurations stop-loss
+    const enrichedConfigs = (configs || []).map((config: any) => {
+      const userInfo = usersMap.get(config.user_id) || { email: null, name: null };
+      
+      return {
+        id: `config-${config.id}`, // Préfixe pour différencier des logs
+        type: 'configuration' as const,
+        userId: config.user_id,
+        userEmail: userInfo.email,
+        userName: userInfo.name,
+        adId: config.ad_id,
+        adName: config.ad_name || 'Unknown',
+        accountId: config.account_id,
+        // Données de configuration
+        enabled: config.enabled,
+        costPerResultThreshold: config.cost_per_result_threshold,
+        zeroResultsSpendThreshold: config.zero_results_spend_threshold,
+        cprEnabled: config.cpr_enabled !== false,
+        zeroResultsEnabled: config.zero_results_enabled !== false,
+        createdAt: config.created_at,
+        updatedAt: config.updated_at,
+        // Pas de données de déclenchement pour les configurations
+        reason: null,
+        spend: null,
+        results: null,
+        threshold: null,
+        actualValue: null,
+        triggeredAt: null,
+        triggeredBy: null,
+        details: {
+          configId: config.id,
+          enabled: config.enabled,
+          costPerResultThreshold: config.cost_per_result_threshold,
+          zeroResultsSpendThreshold: config.zero_results_spend_threshold,
+          cprEnabled: config.cpr_enabled,
+          zeroResultsEnabled: config.zero_results_enabled
+        }
+      };
+    });
 
     // Enrichir les logs de déclenchement avec toutes les informations nécessaires
-    const enrichedHistory = await Promise.all(
+    const enrichedLogs = await Promise.all(
       (logs || []).map(async (log: any) => {
         try {
           const logUserId = log.userId || log.user_id;
@@ -1151,16 +1207,29 @@ export async function getStopLossHistory(req: ExpressRequest, res: Response) {
       })
     );
 
-    // Compter le total AVANT pagination
-    const totalCount = enrichedHistory.length;
+    // Combiner les configurations et les événements déclenchés
+    const allHistory = [...enrichedConfigs, ...enrichedLogs];
+    
+    // Trier par date de création (plus récent en premier)
+    allHistory.sort((a, b) => {
+      const dateA = new Date(a.createdAt).getTime();
+      const dateB = new Date(b.createdAt).getTime();
+      return dateB - dateA; // Décroissant
+    });
+
+    // Compter les statistiques
+    const triggeredCount = enrichedLogs.length;
+    const activeConfigsCount = enrichedConfigs.filter(c => c.enabled).length;
+    const inactiveConfigsCount = enrichedConfigs.filter(c => !c.enabled).length;
+    const totalCount = allHistory.length;
 
     // Paginer le résultat
-    const paginated = enrichedHistory.slice(
+    const paginated = allHistory.slice(
       parseInt(offset as string),
       parseInt(offset as string) + parseInt(limit as string)
     );
     
-    console.log(`✅ [ADMIN] Found ${enrichedHistory.length} triggered stop-loss events (total: ${totalCount})`);
+    console.log(`✅ [ADMIN] Found ${triggeredCount} triggered events, ${enrichedConfigs.length} configurations (${activeConfigsCount} active, ${inactiveConfigsCount} inactive), total: ${totalCount}`);
 
     return res.json({
       success: true,
@@ -1172,7 +1241,10 @@ export async function getStopLossHistory(req: ExpressRequest, res: Response) {
         hasMore: totalCount > parseInt(offset as string) + parseInt(limit as string)
       },
       stats: {
-        triggered: enrichedHistory.length,
+        triggered: triggeredCount,
+        configurations: enrichedConfigs.length,
+        activeConfigs: activeConfigsCount,
+        inactiveConfigs: inactiveConfigsCount,
         total: totalCount
       }
     });
@@ -1188,28 +1260,68 @@ export async function getStopLossHistory(req: ExpressRequest, res: Response) {
 
 /**
  * Delete stop-loss history entry (Admin only)
- * Only triggered events (logs) can be deleted from history
+ * Can delete both triggered events (logs) and configurations (stop_loss_settings)
  */
 export async function deleteStopLossHistoryEntry(req: ExpressRequest, res: Response) {
   try {
-    const { id, type } = req.params; // id is log id, type must be 'triggered'
-    const supabaseAdmin = getSupabaseAdminClient();
-
-    console.log(`🗑️ [ADMIN] Deleting stop-loss history entry: ${id}, type: ${type}`);
-
-    // Seulement les événements déclenchés (triggered) peuvent être supprimés de l'historique
-    if (type !== 'triggered') {
-      return res.status(400).json({
+    // Vérification supplémentaire : s'assurer que l'utilisateur est bien admin
+    // (le middleware requireAdmin devrait déjà avoir vérifié, mais double vérification pour sécurité)
+    if (!req.user || !(req.user as any).role || (req.user as any).role !== 'admin') {
+      console.error(`❌ [ADMIN] Unauthorized deletion attempt by user: ${req.user?.id || 'unknown'}`);
+      return res.status(403).json({
         success: false,
-        message: 'Invalid type. Only "triggered" entries can be deleted from history.'
+        message: 'Access denied: Only administrators can delete stop-loss history entries'
       });
     }
 
+    const { id, type } = req.params; // id is log id or config id, type is 'triggered' or 'configuration'
+    const supabaseAdmin = getSupabaseAdminClient();
+
+    console.log(`🗑️ [ADMIN] Admin user ${req.user.id} deleting stop-loss history entry: ${id}, type: ${type}`);
+
+    // Supprimer soit un événement déclenché (log) soit une configuration (stop_loss_settings)
+    if (type === 'configuration') {
+      // Extraire l'ID réel de la configuration (enlever le préfixe "config-")
+      const configId = id.startsWith('config-') ? id.replace('config-', '') : id;
+      
+      console.log(`🗑️ [ADMIN] Deleting stop-loss configuration: ${configId}`);
+      
+      // Delete from stop_loss_settings table
+      const { error: deleteError } = await (supabaseAdmin
+        .from('stop_loss_settings') as any)
+        .delete()
+        .eq('id', configId);
+
+      if (deleteError) {
+        console.error('❌ Error deleting configuration:', deleteError);
+        return res.status(500).json({
+          success: false,
+          message: `Failed to delete configuration: ${deleteError.message}`
+        });
+      }
+
+      console.log(`✅ [ADMIN] Configuration ${configId} deleted successfully`);
+      return res.json({
+        success: true,
+        message: 'Configuration deleted successfully'
+      });
+    }
+
+    if (type !== 'triggered') {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid type. Only "triggered" or "configuration" entries can be deleted.'
+      });
+    }
+
+    // Extraire l'ID réel si c'est un ID avec préfixe (pour les logs, l'ID est directement l'ID du log)
+    const logId = id.startsWith('config-') ? id.replace('config-', '') : id;
+    
     // Delete from logs table
     const { error: deleteError } = await (supabaseAdmin
       .from('logs') as any)
       .delete()
-      .eq('id', id)
+      .eq('id', logId)
       .eq('action', 'STOP_LOSS_TRIGGERED');
 
     if (deleteError) {
@@ -1229,6 +1341,215 @@ export async function deleteStopLossHistoryEntry(req: ExpressRequest, res: Respo
 
   } catch (error: any) {
     console.error('❌ Error in deleteStopLossHistoryEntry:', error);
+    return res.status(500).json({
+      success: false,
+      message: error.message || 'Server error'
+    });
+  }
+}
+
+/**
+ * Récupérer l'historique détaillé d'une ad spécifique (Admin seulement)
+ * Retourne toutes les désactivations (STOP_LOSS_TRIGGERED) pour cette ad avec analytics
+ */
+export async function getAdStopLossAnalytics(req: ExpressRequest, res: Response) {
+  try {
+    const { userId, adId } = req.params;
+    const supabaseAdmin = getSupabaseAdminClient();
+
+    if (!userId || !adId) {
+      return res.status(400).json({
+        success: false,
+        message: 'userId and adId are required'
+      });
+    }
+
+    console.log(`🔍 [ADMIN] Fetching stop-loss analytics for ad ${adId} (user: ${userId})`);
+
+    // Récupérer tous les événements STOP_LOSS_TRIGGERED pour cette ad spécifique
+    // Utiliser le filtrage JSON pour adId dans details
+    let adLogs: any[] = [];
+    let logsError: any = null;
+
+    // Essayer d'abord avec user_id (format le plus courant)
+    const { data: logsByUser_id, error: error1 } = await supabaseAdmin
+      .from('logs')
+      .select('*')
+      .eq('action', 'STOP_LOSS_TRIGGERED')
+      .eq('user_id', userId)
+      .eq('details->>adId', adId)
+      .order('created_at', { ascending: false });
+
+    if (!error1 && logsByUser_id) {
+      adLogs = logsByUser_id;
+    } else {
+      // Essayer avec userId
+      const { data: logsByUserId, error: error2 } = await supabaseAdmin
+        .from('logs')
+        .select('*')
+        .eq('action', 'STOP_LOSS_TRIGGERED')
+        .eq('userId', userId)
+        .eq('details->>adId', adId)
+        .order('created_at', { ascending: false });
+
+      if (!error2 && logsByUserId) {
+        adLogs = logsByUserId;
+      } else {
+        // Si le filtrage JSON ne fonctionne pas, récupérer tous les logs et filtrer en JavaScript
+        console.warn('⚠️ JSON filtering not working, trying fallback method');
+        const { data: allLogs, error: error3 } = await supabaseAdmin
+          .from('logs')
+          .select('*')
+          .eq('action', 'STOP_LOSS_TRIGGERED')
+          .or(`user_id.eq.${userId},userId.eq.${userId}`)
+          .order('created_at', { ascending: false });
+
+        if (!error3 && allLogs) {
+          // Filtrer en JavaScript
+          adLogs = allLogs.filter((log: any) => {
+            const logAdId = log.details?.adId || log.details?.ad_id;
+            return logAdId === adId;
+          });
+        } else {
+          logsError = error3 || error2 || error1;
+        }
+      }
+    }
+
+    if (logsError) {
+      console.error('❌ Error fetching stop-loss logs:', logsError);
+      return res.status(500).json({
+        success: false,
+        message: "Failed to fetch stop-loss analytics"
+      });
+    }
+
+    console.log(`📊 [ADMIN] Found ${adLogs.length} stop-loss events for ad ${adId}`);
+    
+    // Debug: Afficher les premiers logs pour vérifier la structure
+    if (adLogs.length > 0) {
+      console.log(`📊 [ADMIN] Sample log structure:`, JSON.stringify(adLogs[0], null, 2));
+    } else {
+      console.log(`⚠️ [ADMIN] No logs found for ad ${adId}, userId: ${userId}`);
+      // Essayer de voir s'il y a des logs pour cet utilisateur sans filtre adId
+      const { data: allUserLogs } = await supabaseAdmin
+        .from('logs')
+        .select('id, action, user_id, userId, details')
+        .eq('action', 'STOP_LOSS_TRIGGERED')
+        .or(`user_id.eq.${userId},userId.eq.${userId}`)
+        .limit(5);
+      console.log(`📊 [ADMIN] Sample logs for user (first 5):`, JSON.stringify(allUserLogs, null, 2));
+    }
+
+    // Récupérer les informations utilisateur
+    let userInfo = { email: null, name: null };
+    try {
+      // Essayer d'abord avec la fonction RPC
+      const { data: allUsers, error: usersError } = await supabaseAdmin.rpc('get_all_users');
+      if (!usersError && allUsers && Array.isArray(allUsers)) {
+        const usersMap = new Map();
+        allUsers.forEach((user: any) => {
+          usersMap.set(user.id, {
+            email: user.email || null,
+            name: user.user_metadata?.full_name || user.user_metadata?.name || null,
+            role: user.role || 'user'
+          });
+        });
+        userInfo = usersMap.get(userId) || { email: null, name: null };
+      } else {
+        // Si la fonction RPC n'existe pas, essayer de récupérer directement depuis auth.users
+        console.warn('⚠️ RPC get_all_users not available, trying direct user fetch');
+        try {
+          const { data: userData, error: userError } = await supabaseAdmin.auth.admin.getUserById(userId);
+          if (!userError && userData?.user) {
+            userInfo = {
+              email: userData.user.email || null,
+              name: userData.user.user_metadata?.full_name || userData.user.user_metadata?.name || null
+            };
+          }
+        } catch (authError) {
+          console.warn('⚠️ Could not fetch user info:', authError);
+        }
+      }
+    } catch (error) {
+      console.warn('⚠️ Error fetching user info, continuing without it:', error);
+    }
+
+    // Enrichir les logs avec toutes les informations
+    const enrichedLogs = adLogs.map((log: any) => {
+      const triggeredAt = log.details?.triggeredAt || log.details?.triggered_at || log.created_at;
+      return {
+        id: log.id,
+        triggeredAt: triggeredAt,
+        createdAt: log.created_at,
+        reason: log.details?.reason || 'Unknown reason',
+        spend: log.details?.spend || 0,
+        results: log.details?.results || 0,
+        threshold: log.details?.threshold,
+        actualValue: log.details?.actualValue || log.details?.actual_value,
+        triggeredBy: log.details?.triggeredBy || log.details?.triggered_by || 'automatic',
+        costPerResult: log.details?.cost_per_result || (log.details?.results > 0 ? log.details?.spend / log.details?.results : null),
+        details: log.details
+      };
+    });
+
+    // Calculer les statistiques
+    const stats = {
+      totalDeactivations: enrichedLogs.length,
+      totalSpent: enrichedLogs.reduce((sum, log) => sum + (log.spend || 0), 0),
+      totalResults: enrichedLogs.reduce((sum, log) => sum + (log.results || 0), 0),
+      averageSpend: enrichedLogs.length > 0 ? enrichedLogs.reduce((sum, log) => sum + (log.spend || 0), 0) / enrichedLogs.length : 0,
+      averageResults: enrichedLogs.length > 0 ? enrichedLogs.reduce((sum, log) => sum + (log.results || 0), 0) / enrichedLogs.length : 0,
+      firstDeactivation: enrichedLogs.length > 0 ? enrichedLogs[enrichedLogs.length - 1].triggeredAt : null,
+      lastDeactivation: enrichedLogs.length > 0 ? enrichedLogs[0].triggeredAt : null,
+      byReason: enrichedLogs.reduce((acc: any, log) => {
+        const reason = log.reason || 'Unknown';
+        acc[reason] = (acc[reason] || 0) + 1;
+        return acc;
+      }, {}),
+      byHour: enrichedLogs.reduce((acc: any, log) => {
+        const date = new Date(log.triggeredAt);
+        const hour = date.getHours();
+        acc[hour] = (acc[hour] || 0) + 1;
+        return acc;
+      }, {}),
+      byDay: enrichedLogs.reduce((acc: any, log) => {
+        const date = new Date(log.triggeredAt);
+        const day = date.toISOString().split('T')[0];
+        acc[day] = (acc[day] || 0) + 1;
+        return acc;
+      }, {})
+    };
+
+    // Récupérer le nom de l'ad depuis stop_loss_settings
+    let adName = 'Unknown';
+    const { data: stopLossConfig } = await supabaseAdmin
+      .from('stop_loss_settings')
+      .select('ad_name')
+      .eq('user_id', userId)
+      .eq('ad_id', adId)
+      .limit(1)
+      .maybeSingle();
+
+    if (stopLossConfig) {
+      adName = (stopLossConfig as any).ad_name || adId;
+    }
+
+    return res.json({
+      success: true,
+      data: {
+        adId,
+        adName,
+        userId,
+        userEmail: userInfo.email,
+        userName: userInfo.name,
+        events: enrichedLogs,
+        stats
+      }
+    });
+
+  } catch (error: any) {
+    console.error('❌ Error in getAdStopLossAnalytics:', error);
     return res.status(500).json({
       success: false,
       message: error.message || 'Server error'
