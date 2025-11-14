@@ -1895,7 +1895,11 @@ app.get("/api/facebook/campaigns/:accountId", async (req, res) => {
     // Essayer d'abord de récupérer les insights au niveau du compte
     console.log(`🔍 Fetching account-level insights for ${accountId}`);
     try {
-      const accountInsightsUrl = `https://graph.facebook.com/v18.0/${accountId}/insights?access_token=${tokenRow.token}&fields=spend,impressions,clicks,reach,ctr,cpc,cpm,cpp,frequency,actions,conversions,conversion_rate,cost_per_conversion,cost_per_result&date_preset=last_30d&level=campaign`;
+      // Utiliser 'last_30d' par défaut pour la liste des campagnes (plus logique pour voir les dépenses)
+      // 'today' peut être utilisé pour les détails d'une campagne spécifique
+      const { date_preset } = req.query;
+      const datePreset = date_preset || 'last_30d';
+      const accountInsightsUrl = `https://graph.facebook.com/v18.0/${accountId}/insights?access_token=${tokenRow.token}&fields=spend,impressions,clicks,reach,ctr,cpc,cpm,cpp,frequency,actions,conversions,conversion_rate,cost_per_conversion,cost_per_result&date_preset=${datePreset}&level=campaign`;
       
       // Ajouter un timeout pour éviter les blocages
       const controller = new AbortController();
@@ -2038,7 +2042,7 @@ app.get("/api/facebook/campaigns/:accountId", async (req, res) => {
             }
             
           // Récupérer les insights (métriques) pour chaque campagne
-            const insightsUrl = `https://graph.facebook.com/v18.0/${campaign.id}/insights?access_token=${tokenRow.token}&fields=spend,impressions,clicks,reach,ctr,cpc,cpm,cpp,frequency,actions,conversions,conversion_rate,cost_per_conversion&date_preset=last_30d`;
+            const insightsUrl = `https://graph.facebook.com/v18.0/${campaign.id}/insights?access_token=${tokenRow.token}&fields=spend,impressions,clicks,reach,ctr,cpc,cpm,cpp,frequency,actions,conversions,conversion_rate,cost_per_conversion&date_preset=${datePreset}`;
             console.log(`🔍 Fetching insights for campaign ${campaign.id}: ${campaign.name} (${campaign.status}) - ${i + 1}/${batchCampaigns.length} in batch ${batchIndex + 1}`);
           const insightsResponse = await fetch(insightsUrl);
           const insightsData = await insightsResponse.json();

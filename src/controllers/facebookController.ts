@@ -595,39 +595,24 @@ export async function getAccountCampaigns(req: Request, res: Response) {
 
         const tokenRow = await getFacebookToken(userId);
 
-        // Construire l'endpoint avec les champs nécessaires
         const endpoint = `${accountId}/campaigns?fields=id,name,status,effective_status,objective,created_time,updated_time`;
-
-        console.log(`🔍 Fetching campaigns for account ${accountId} with endpoint: ${endpoint}`);
-        console.log(`🔍 Using token: ${tokenRow.token.substring(0, 20)}...`);
         
         let campaignsData = [];
 
         try {
-        // Utiliser la fonction de pagination pour récupérer TOUTES les campagnes
-        const campaigns = await fetchFbGraphPaginated(tokenRow.token, endpoint);
-            console.log(`🔍 Facebook API response with pagination:`, {
-                total_campaigns: campaigns.data.length,
-                total_pages: campaigns.paging.total_pages,
-                total_items: campaigns.paging.total_items
-            });
+            const campaigns = await fetchFbGraphPaginated(tokenRow.token, endpoint);
             
-            // Retourner les campagnes avec le format attendu par le frontend
             campaignsData = campaigns.data?.map(campaign => ({
                 id: campaign.id,
                 name: campaign.name,
+                account_id: accountId,
                 status: campaign.status,
                 effective_status: campaign.effective_status,
                 objective: campaign.objective,
                 created_time: campaign.created_time,
                 updated_time: campaign.updated_time
             })) || [];
-
-            console.log(`📊 Found ${campaignsData.length} real campaigns for account ${accountId} (with pagination)`);
         } catch (fbError: any) {
-            console.error(`❌ Facebook API error for account ${accountId}:`, fbError.message);
-            
-            // Si le token est invalide, retourner une erreur spécifique
             if (fbError.response?.data?.error?.code === 190) {
                 return res.status(401).json({
                     success: false,
@@ -636,14 +621,11 @@ export async function getAccountCampaigns(req: Request, res: Response) {
                     accountId: accountId
                 });
             }
-            
-            // Pour les autres erreurs, les propager
             throw fbError;
         }
 
         // Filtrer par statut si fourni
         if (status) {
-            // Gérer le cas où status est une chaîne séparée par des virgules
             let statusArray = [];
             if (typeof status === 'string') {
                 statusArray = status.split(',').map(s => s.trim());
@@ -653,14 +635,10 @@ export async function getAccountCampaigns(req: Request, res: Response) {
                 statusArray = [status];
             }
             
-            console.log(`🔍 Filtering campaigns by status:`, statusArray);
             campaignsData = campaignsData.filter(campaign => 
                 statusArray.includes(campaign.effective_status)
             );
-            console.log(`📊 After status filter: ${campaignsData.length} campaigns`);
         }
-
-        console.log(`📊 Final result: ${campaignsData.length} campaigns for account ${accountId}`);
         
         return res.json({ 
             success: true,
@@ -785,10 +763,14 @@ export async function getAccountInsights(req: Request, res: Response) {
 export async function getCampaignAdsets(req: Request, res: Response) {
     try {
         const userId = req.user!.id;
-        const { campaignId } = req.params;
+        let { campaignId } = req.params;
+        
+        // Nettoyer l'ID de campagne (enlever les espaces, préfixes, etc.)
+        campaignId = campaignId?.trim();
         
         // Validation de l'ID de campagne
         if (!campaignId || campaignId.length < 5) {
+            console.error('❌ Invalid campaign ID format:', campaignId);
             return res.status(400).json({
                 success: false,
                 message: "Invalid campaign ID",
@@ -796,29 +778,83 @@ export async function getCampaignAdsets(req: Request, res: Response) {
             });
         }
 
+        console.log('🔍 Fetching adsets for campaign:', campaignId, 'userId:', userId);
+        
         const tokenRow = await getFacebookToken(userId);
+        
+        if (!tokenRow || !tokenRow.token) {
+            console.error('❌ No Facebook token found for user:', userId);
+            return res.status(401).json({
+                success: false,
+                message: "Facebook token not found. Please reconnect your Facebook account."
+            });
+        }
 
         // Récupérer les ad sets de base de la campagne
         const endpoint = `${campaignId}/adsets?fields=id,name,status,created_time,updated_time`;
         
-        const adsetsResponse = await fetchFbGraph(tokenRow.token, endpoint);
+        console.log('🔍 Facebook API endpoint:', endpoint);
+        console.log('🔍 Token preview:', tokenRow.token.substring(0, 20) + '...');
         
-        // Vérifier si la réponse contient une erreur
-        if (adsetsResponse.error) {
-            console.error('❌ Facebook API error:', adsetsResponse.error);
-            return res.status(400).json({
+        let adsetsResponse;
+        try {
+            adsetsResponse = await fetchFbGraph(tokenRow.token, endpoint, undefined, userId);
+        } catch (fbError: any) {
+            console.error('❌ Facebook API error:', fbError);
+            console.error('❌ Campaign ID used:', campaignId);
+            console.error('❌ Error details:', JSON.stringify(fbError.response?.data || fbError, null, 2));
+            
+            const fbErrorData = fbError.response?.data?.error || {};
+            
+            // Vérifier si c'est une erreur de permissions ou d'accès
+            if (fbErrorData.code === 100 || fbErrorData.type === 'OAuthException' || fbError.response?.status === 403) {
+                return res.status(403).json({
+                    success: false,
+                    message: "You don't have permission to access this campaign. Please check your Facebook account permissions.",
+                    error: fbErrorData.message || "Campaign not accessible",
+                    errorCode: fbErrorData.code
+                });
+            }
+            
+            // Erreur 400 ou autre erreur de validation
+            if (fbError.response?.status === 400) {
+                return res.status(400).json({
+                    success: false,
+                    message: "Invalid campaign ID or campaign not accessible",
+                    error: fbErrorData.message || fbError.message || "Campaign not accessible",
+                    errorCode: fbErrorData.code,
+                    campaignId: campaignId
+                });
+            }
+            
+            // Autres erreurs
+            return res.status(500).json({
                 success: false,
-                message: "Invalid campaign ID or campaign not found",
-                error: adsetsResponse.error.message || "Campaign not accessible"
+                message: "Failed to fetch campaign adsets",
+                error: fbErrorData.message || fbError.message || "Unknown error",
+                errorCode: fbErrorData.code,
+                campaignId: campaignId
             });
         }
+        
+        // Vérifier si la réponse contient des données
+        if (!adsetsResponse || !adsetsResponse.data) {
+            console.warn('⚠️ No data in response for campaign:', campaignId);
+            return res.json({ 
+                adsets: [],
+                success: true,
+                message: "No adsets found for this campaign"
+            });
+        }
+        
+        console.log('✅ Successfully fetched adsets for campaign:', campaignId, 'count:', adsetsResponse.data?.length || 0);
 
         // Récupérer les métriques pour chaque ad set
         const adsetsWithMetrics = [];
         for (const adset of adsetsResponse.data || []) {
             try {
                 const insightsEndpoint = `${adset.id}/insights?fields=spend,impressions,clicks,reach,frequency,cpc,cpm,ctr,conversions&date_preset=last_30d`;
-                const insights = await fetchFbGraph(tokenRow.token, insightsEndpoint);
+                const insights = await fetchFbGraph(tokenRow.token, insightsEndpoint, undefined, userId);
                 const insightData = insights.data?.[0] || {};
                 
                 adsetsWithMetrics.push({
@@ -897,7 +933,7 @@ export async function getAdsetAds(req: Request, res: Response) {
         for (const ad of ads.data || []) {
             try {
                 const insightsEndpoint = `${ad.id}/insights?fields=spend,impressions,clicks,reach,frequency,cpc,cpm,ctr,conversions&date_preset=last_30d`;
-                const insights = await fetchFbGraph(tokenRow.token, insightsEndpoint);
+                const insights = await fetchFbGraph(tokenRow.token, insightsEndpoint, undefined, userId);
                 console.log(`📊 Insights for ad ${ad.id}:`, JSON.stringify(insights, null, 2));
                 const insightData = insights.data?.[0] || {};
                 console.log(`📊 Insight data for ad ${ad.id}:`, insightData);
@@ -1312,6 +1348,7 @@ export async function getBusinessAdAccounts(req: Request, res: Response) {
     try {
         const userId = req.user!.id;
         const { businessId } = req.params;
+        const { dateRange = 'last_30d', since, until } = req.query;
         const tokenRow = await getFacebookToken(userId);
 
         // Créer un AbortController pour cette requête
@@ -1337,9 +1374,20 @@ export async function getBusinessAdAccounts(req: Request, res: Response) {
             }
             
             try {
-                // Récupérer les insights du compte pour les 30 derniers jours
+                // Construire l'endpoint pour les insights selon le type de période
+                let insightsEndpoint = `${account.id}/insights?fields=spend,impressions,clicks,reach,frequency,cpc,cpm,ctr,conversions`;
+                
+                if (since && until) {
+                    // Utiliser les dates personnalisées
+                    insightsEndpoint += `&time_range[since]=${since}&time_range[until]=${until}`;
+                } else {
+                    // Utiliser le preset
+                    insightsEndpoint += `&date_preset=${dateRange}`;
+                }
+                
+                // Récupérer les insights du compte pour la période sélectionnée
                 const insightsData = await fetchFbGraph(tokenRow.token, 
-                    `${account.id}/insights?fields=spend,impressions,clicks,reach,frequency,cpc,cpm,ctr,conversions&date_preset=last_30d`,
+                    insightsEndpoint,
                     abortController.signal,
                     userId
                 );
@@ -1405,25 +1453,54 @@ export async function getAccountAnalytics(req: Request, res: Response) {
     try {
         const userId = req.user!.id;
         const { accountId } = req.params;
-        const { dateRange = 'last_30d' } = req.query;
+        const { dateRange = 'last_30d', since, until } = req.query;
         const tokenRow = await getFacebookToken(userId);
 
-        // Récupérer les insights du compte
-        const insightsData = await fetchFbGraph(tokenRow.token, 
-            `${accountId}/insights?fields=spend,impressions,clicks,reach,frequency,cpc,cpm,ctr,conversions,cost_per_conversion&date_preset=${dateRange}`
-        );
+        // Construire l'endpoint pour les insights selon le type de période
+        let insightsEndpoint = `${accountId}/insights?fields=spend,impressions,clicks,reach,frequency,cpc,cpm,ctr,conversions,cost_per_conversion`;
+        
+        if (since && until) {
+            // Utiliser les dates personnalisées
+            insightsEndpoint += `&time_range[since]=${since}&time_range[until]=${until}`;
+        } else {
+            // Utiliser le preset
+            insightsEndpoint += `&date_preset=${dateRange}`;
+        }
 
-        // Récupérer les campagnes avec métriques
-        const campaignsData = await fetchFbGraph(tokenRow.token, 
-            `${accountId}/campaigns?fields=id,name,status,objective,created_time,updated_time,effective_status`
-        );
+        // Récupérer les insights du compte
+        const insightsData = await fetchFbGraph(tokenRow.token, insightsEndpoint, undefined, userId);
+
+        // Récupérer TOUTES les campagnes avec pagination (au lieu de seulement 25)
+        const campaignsEndpoint = `${accountId}/campaigns?fields=id,name,status,objective,created_time,updated_time,effective_status`;
+        let campaignsData;
+        
+        try {
+            // Utiliser la pagination pour récupérer toutes les campagnes
+            const paginatedResult = await fetchFbGraphPaginated(tokenRow.token, campaignsEndpoint, undefined, userId, 100);
+            campaignsData = { data: paginatedResult.data || [] };
+            console.log(`📊 Fetched ${campaignsData.data.length} campaigns for account ${accountId} (with pagination)`);
+        } catch (paginationError: any) {
+            // Si la pagination échoue, fallback vers la méthode normale (limite à 25)
+            console.warn(`⚠️ Pagination failed, falling back to standard fetch:`, paginationError.message);
+            campaignsData = await fetchFbGraph(tokenRow.token, campaignsEndpoint);
+            console.log(`📊 Fetched ${campaignsData.data?.length || 0} campaigns for account ${accountId} (standard fetch, may be limited)`);
+        }
 
         let campaignsWithMetrics = [];
         for (const campaign of campaignsData.data || []) {
             try {
-                const campaignInsights = await fetchFbGraph(tokenRow.token, 
-                    `${campaign.id}/insights?fields=spend,impressions,clicks,reach,frequency,cpc,cpm,ctr,conversions&date_preset=${dateRange}`
-                );
+                // Construire l'endpoint pour les insights de campagne selon le type de période
+                let campaignInsightsEndpoint = `${campaign.id}/insights?fields=spend,impressions,clicks,reach,frequency,cpc,cpm,ctr,conversions`;
+                
+                if (since && until) {
+                    // Utiliser les dates personnalisées
+                    campaignInsightsEndpoint += `&time_range[since]=${since}&time_range[until]=${until}`;
+                } else {
+                    // Utiliser le preset
+                    campaignInsightsEndpoint += `&date_preset=${dateRange}`;
+                }
+                
+                const campaignInsights = await fetchFbGraph(tokenRow.token, campaignInsightsEndpoint, undefined, userId);
                 const insights = campaignInsights.data?.[0] || {};
 
                 campaignsWithMetrics.push({
@@ -1533,7 +1610,7 @@ export async function getAdDetails(req: Request, res: Response) {
             }
             
             console.log(`🔍 [getAdDetails] Full insights endpoint: ${insightsEndpoint}`);
-            const insights = await fetchFbGraph(tokenRow.token, insightsEndpoint);
+            const insights = await fetchFbGraph(tokenRow.token, insightsEndpoint, undefined, userId);
             const insightData = insights.data?.[0] || {};
             console.log('🔍 [getAdDetails] Insight data:', insightData);
             console.log('🔍 [getAdDetails] Query params received:', { date_preset, since, until });
