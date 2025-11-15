@@ -1,6 +1,6 @@
 import { Router } from "express";
 import protect from "../middleware/authMiddleware.js";
-import { saveAccessToken, getUserData, getFbData, getAdAccounts, getAccountCampaigns, getAccountInsights, getCampaignAdsets, getAdsetAds, updateAdStatus, disconnectFacebook, clearFacebookCache, abortFacebookRequests, getFacebookToken, fetchFbGraph, getCompleteAnalytics, getBusinessAdAccounts, getAccountAnalytics, facebookDiagnostic, testFacebookSimple, testAdAccounts, handleOAuthCallback, getAccountTotalSpend, getAdDetails } from "../controllers/facebookController.js";
+import { saveAccessToken, getUserData, getFbData, getAdAccounts, getAccountCampaigns, getAccountInsights, getCampaignAdsets, getAdsetAds, updateAdStatus, disconnectFacebook, clearFacebookCache, abortFacebookRequests, getFacebookToken, fetchFbGraph, getBusinessAdAccounts, facebookDiagnostic, testFacebookSimple, testAdAccounts, handleOAuthCallback, getAccountTotalSpend, getAdDetails } from "../controllers/facebookController.js";
 import { Request, Response } from "../types/express.js";
 
 const router = Router();
@@ -160,10 +160,8 @@ router.post("/account/:accountId/clear-cache", protect, clearFacebookCache);
 // abort Facebook requests
 router.post("/abort-requests", protect, abortFacebookRequests);
 
-// Analytics endpoints
-router.get("/analytics", protect, getCompleteAnalytics);
+// Business Manager endpoints
 router.get("/business/:businessId/accounts", protect, getBusinessAdAccounts);
-router.get("/account/:accountId/analytics", protect, getAccountAnalytics);
 
 // Diagnostic endpoints
 router.get("/test-simple", protect, testFacebookSimple);

@@ -100,6 +100,31 @@ export async function loadSchedulesFromDB() {
     }
 }
 
+// Fonction helper pour vérifier si l'heure actuelle correspond à une heure cible (avec fenêtre de 2 minutes)
+function isTimeMatch(currentMinutes: number, targetMinutes: number, windowMinutes: number = 2): boolean {
+    // Gérer le cas où on passe minuit (targetMinutes peut être proche de 0 ou 1440)
+    if (targetMinutes === 0) {
+        // Pour minuit, vérifier dans une fenêtre autour de 0
+        return currentMinutes >= 0 && currentMinutes < windowMinutes;
+    }
+    
+    // Vérifier dans une fenêtre autour de l'heure cible
+    const lowerBound = targetMinutes - windowMinutes;
+    const upperBound = targetMinutes + windowMinutes;
+    
+    // Gérer le cas où la fenêtre dépasse minuit
+    if (lowerBound < 0) {
+        return currentMinutes >= (1440 + lowerBound) || currentMinutes <= upperBound;
+    }
+    
+    // Gérer le cas où la fenêtre dépasse 24h
+    if (upperBound >= 1440) {
+        return currentMinutes >= lowerBound || currentMinutes <= (upperBound - 1440);
+    }
+    
+    return currentMinutes >= lowerBound && currentMinutes <= upperBound;
+}
+
 // Fonction pour vérifier si un schedule doit être exécuté
 function checkIfScheduleShouldExecute(schedule: ScheduleData, now: Date): { shouldExecute: boolean; action?: string } {
     const scheduledTime = new Date(schedule.scheduledDate);
@@ -110,46 +135,113 @@ function checkIfScheduleShouldExecute(schedule: ScheduleData, now: Date): { shou
         scheduleType: schedule.scheduleType,
         currentMinutes,
         lastExecutionDate: schedule.lastExecutionDate,
-        currentDate
+        currentDate,
+        lastAction: schedule.lastAction
     });
     
-    // Gérer RECURRING_DAILY avec 4 actions
-    if (schedule.scheduleType === 'RECURRING_DAILY' && 
-        schedule.stopMinutes1 !== undefined && 
-        schedule.startMinutes !== undefined && 
-        schedule.stopMinutes2 !== undefined && 
-        schedule.startMinutes2 !== undefined) {
+    // Gérer RECURRING_DAILY avec 2 ou 4 actions
+    if (schedule.scheduleType === 'RECURRING_DAILY') {
+        const has4Actions = schedule.stopMinutes1 !== undefined && 
+                           schedule.startMinutes !== undefined && 
+                           schedule.stopMinutes2 !== undefined && 
+                           schedule.startMinutes2 !== undefined;
         
-        // Vérifier si on a déjà exécuté une action aujourd'hui
-        if (schedule.lastExecutionDate === currentDate && schedule.lastAction) {
-            console.log(`⏰ Already executed ${schedule.lastAction} today for ad ${schedule.adId}`);
+        const has2Actions = schedule.stopMinutes1 !== undefined && 
+                           schedule.startMinutes !== undefined &&
+                           schedule.stopMinutes2 === undefined && 
+                           schedule.startMinutes2 === undefined;
+        
+        if (has4Actions) {
+            // Gérer RECURRING_DAILY avec 4 actions
+            // Vérifier si on a déjà exécuté une action aujourd'hui
+            if (schedule.lastExecutionDate === currentDate && schedule.lastAction) {
+                console.log(`⏰ Already executed ${schedule.lastAction} today for ad ${schedule.adId}`);
+                
+                // Déterminer quelle est la prochaine action à exécuter
+                if (schedule.lastAction === 'STOP_1' && isTimeMatch(currentMinutes, schedule.startMinutes!)) {
+                    console.log(`🟢 Time for ACTIVE_1 at ${currentMinutes} (target: ${schedule.startMinutes})`);
+                    return { shouldExecute: true, action: 'ACTIVE_1' };
+                } else if (schedule.lastAction === 'ACTIVE_1' && isTimeMatch(currentMinutes, schedule.stopMinutes2!)) {
+                    console.log(`🔴 Time for STOP_2 at ${currentMinutes} (target: ${schedule.stopMinutes2})`);
+                    return { shouldExecute: true, action: 'STOP_2' };
+                } else if (schedule.lastAction === 'STOP_2' && isTimeMatch(currentMinutes, schedule.startMinutes2!)) {
+                    console.log(`🟢 Time for ACTIVE_2 at ${currentMinutes} (target: ${schedule.startMinutes2})`);
+                    return { shouldExecute: true, action: 'ACTIVE_2' };
+                }
+            } else if (schedule.lastExecutionDate !== currentDate || !schedule.lastAction) {
+                // Nouveau jour ou première exécution - vérifier quelle action doit être exécutée
+                if (isTimeMatch(currentMinutes, schedule.stopMinutes1!)) {
+                    console.log(`🔴 Time for STOP_1 (new day) at ${currentMinutes} (target: ${schedule.stopMinutes1})`);
+                    return { shouldExecute: true, action: 'STOP_1' };
+                } else if (isTimeMatch(currentMinutes, schedule.startMinutes!)) {
+                    console.log(`🟢 Time for ACTIVE_1 (new day) at ${currentMinutes} (target: ${schedule.startMinutes})`);
+                    return { shouldExecute: true, action: 'ACTIVE_1' };
+                } else if (isTimeMatch(currentMinutes, schedule.stopMinutes2!)) {
+                    console.log(`🔴 Time for STOP_2 (new day) at ${currentMinutes} (target: ${schedule.stopMinutes2})`);
+                    return { shouldExecute: true, action: 'STOP_2' };
+                } else if (isTimeMatch(currentMinutes, schedule.startMinutes2!)) {
+                    console.log(`🟢 Time for ACTIVE_2 (new day) at ${currentMinutes} (target: ${schedule.startMinutes2})`);
+                    return { shouldExecute: true, action: 'ACTIVE_2' };
+                }
+            }
+        } else if (has2Actions) {
+            // Gérer RECURRING_DAILY avec seulement 2 actions (STOP_1 et ACTIVE_1)
+            // Cycle: STOP_1 (jour N) → ACTIVE_1 (jour N) → STOP_1 (jour N+1) → ACTIVE_1 (jour N+1) ...
             
-            // Déterminer quelle est la prochaine action à exécuter
-            if (schedule.lastAction === 'STOP_1' && currentMinutes >= schedule.startMinutes && currentMinutes < schedule.startMinutes + 1) {
-                console.log(`🟢 Time for ACTIVE_1 at ${currentMinutes}`);
-                return { shouldExecute: true, action: 'ACTIVE_1' };
-            } else if (schedule.lastAction === 'ACTIVE_1' && currentMinutes >= schedule.stopMinutes2 && currentMinutes < schedule.stopMinutes2 + 1) {
-                console.log(`🔴 Time for STOP_2 at ${currentMinutes}`);
-                return { shouldExecute: true, action: 'STOP_2' };
-            } else if (schedule.lastAction === 'STOP_2' && currentMinutes >= schedule.startMinutes2 && currentMinutes < schedule.startMinutes2 + 1) {
-                console.log(`🟢 Time for ACTIVE_2 at ${currentMinutes}`);
-                return { shouldExecute: true, action: 'ACTIVE_2' };
+            const stop1Minutes = schedule.stopMinutes1!;
+            const active1Minutes = schedule.startMinutes!;
+            
+            if (schedule.lastExecutionDate === currentDate && schedule.lastAction) {
+                // On a déjà exécuté une action aujourd'hui
+                console.log(`⏰ Already executed ${schedule.lastAction} today for ad ${schedule.adId}`);
+                
+                if (schedule.lastAction === 'STOP_1') {
+                    // On a exécuté STOP_1 aujourd'hui, vérifier si c'est l'heure pour ACTIVE_1
+                    if (isTimeMatch(currentMinutes, active1Minutes)) {
+                        console.log(`🟢 Time for ACTIVE_1 at ${currentMinutes} (target: ${active1Minutes})`);
+                        return { shouldExecute: true, action: 'ACTIVE_1' };
+                    } else {
+                        // On attend ACTIVE_1, mais ce n'est pas encore l'heure
+                        const nextActionTime = `${Math.floor(active1Minutes / 60)}:${(active1Minutes % 60).toString().padStart(2, '0')}`;
+                        console.log(`⏳ Waiting for ACTIVE_1 at ${nextActionTime} (current: ${currentMinutes}, target: ${active1Minutes})`);
+                    }
+                } else if (schedule.lastAction === 'ACTIVE_1') {
+                    // On a exécuté ACTIVE_1 aujourd'hui, on attend STOP_1 le jour suivant
+                    console.log(`⏳ Already executed ACTIVE_1 today, waiting for STOP_1 tomorrow at 00:00`);
+                }
+            } else {
+                // Nouveau jour ou première exécution - déterminer quelle action doit être exécutée
+                // Logique : si on est entre STOP_1 et ACTIVE_1, on attend ACTIVE_1
+                // Si on est après ACTIVE_1, on attend STOP_1 le jour suivant
+                
+                // Vérifier si on est dans la fenêtre pour STOP_1
+                if (isTimeMatch(currentMinutes, stop1Minutes)) {
+                    console.log(`🔴 Time for STOP_1 (new day/first execution) at ${currentMinutes} (target: ${stop1Minutes})`);
+                    return { shouldExecute: true, action: 'STOP_1' };
+                }
+                // Vérifier si on est dans la fenêtre pour ACTIVE_1
+                else if (isTimeMatch(currentMinutes, active1Minutes)) {
+                    console.log(`🟢 Time for ACTIVE_1 (new day/first execution) at ${currentMinutes} (target: ${active1Minutes})`);
+                    return { shouldExecute: true, action: 'ACTIVE_1' };
+                }
+                // Si on est entre STOP_1 et ACTIVE_1, on attend ACTIVE_1
+                else if (currentMinutes > stop1Minutes && currentMinutes < active1Minutes) {
+                    const nextActionTime = `${Math.floor(active1Minutes / 60)}:${(active1Minutes % 60).toString().padStart(2, '0')}`;
+                    console.log(`⏳ Between STOP_1 and ACTIVE_1, waiting for ACTIVE_1 at ${nextActionTime} (current: ${currentMinutes})`);
+                }
+                // Si on est après ACTIVE_1, on attend STOP_1 le jour suivant
+                else if (currentMinutes > active1Minutes) {
+                    console.log(`⏳ After ACTIVE_1 today, waiting for STOP_1 tomorrow at 00:00 (current: ${currentMinutes})`);
+                }
+                // Si on est avant STOP_1, on attend STOP_1
+                else {
+                    const nextActionTime = `${Math.floor(stop1Minutes / 60)}:${(stop1Minutes % 60).toString().padStart(2, '0')}`;
+                    console.log(`⏳ Before STOP_1, waiting for STOP_1 at ${nextActionTime} (current: ${currentMinutes})`);
+                }
             }
-        } else if (schedule.lastExecutionDate !== currentDate) {
-            // Nouveau jour - vérifier quelle action doit être exécutée
-            if (currentMinutes >= schedule.stopMinutes1 && currentMinutes < schedule.stopMinutes1 + 1) {
-                console.log(`🔴 Time for STOP_1 (new day) at ${currentMinutes}`);
-                return { shouldExecute: true, action: 'STOP_1' };
-            } else if (currentMinutes >= schedule.startMinutes && currentMinutes < schedule.startMinutes + 1) {
-                console.log(`🟢 Time for ACTIVE_1 (new day) at ${currentMinutes}`);
-                return { shouldExecute: true, action: 'ACTIVE_1' };
-            } else if (currentMinutes >= schedule.stopMinutes2 && currentMinutes < schedule.stopMinutes2 + 1) {
-                console.log(`🔴 Time for STOP_2 (new day) at ${currentMinutes}`);
-                return { shouldExecute: true, action: 'STOP_2' };
-            } else if (currentMinutes >= schedule.startMinutes2 && currentMinutes < schedule.startMinutes2 + 1) {
-                console.log(`🟢 Time for ACTIVE_2 (new day) at ${currentMinutes}`);
-                return { shouldExecute: true, action: 'ACTIVE_2' };
-            }
+        } else {
+            console.log(`⚠️ Invalid RECURRING_DAILY schedule configuration for ad ${schedule.adId}`);
+            return { shouldExecute: false };
         }
         
         console.log(`⏰ No action needed for recurring ad ${schedule.adId} at ${currentMinutes} minutes`);
@@ -251,6 +343,34 @@ export async function createSchedule(req: Request, res: Response) {
                 success: false,
                 message: "Invalid startMinutes2. Must be between 0 and 1439."
             });
+        }
+
+        // Validation spécifique pour RECURRING_DAILY
+        if (scheduleType === 'RECURRING_DAILY') {
+            // Pour RECURRING_DAILY, on doit avoir au moins stopMinutes1 et startMinutes
+            if (stopMinutes1 === undefined || startMinutes === undefined) {
+                return res.status(400).json({
+                    success: false,
+                    message: "RECURRING_DAILY schedule requires at least stopMinutes1 and startMinutes"
+                });
+            }
+            
+            // Si on a stopMinutes2 ou startMinutes2, on doit avoir les deux
+            const hasPartial4Actions = (stopMinutes2 !== undefined && startMinutes2 === undefined) || 
+                                      (stopMinutes2 === undefined && startMinutes2 !== undefined);
+            if (hasPartial4Actions) {
+                return res.status(400).json({
+                    success: false,
+                    message: "If you provide stopMinutes2 or startMinutes2, you must provide both for a 4-action schedule"
+                });
+            }
+            
+            // Log le type de schedule créé
+            if (stopMinutes2 !== undefined && startMinutes2 !== undefined) {
+                console.log('📅 Creating RECURRING_DAILY schedule with 4 actions');
+            } else {
+                console.log('📅 Creating RECURRING_DAILY schedule with 2 actions');
+            }
         }
 
         // Récupérer le token Facebook
