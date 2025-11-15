@@ -1325,8 +1325,46 @@ export async function getAdSchedules(req: Request, res: Response) {
         
         console.log('🔍 Getting schedules for ad:', adId);
         
-        const userSchedules = schedules.get(userId) || [];
-        const adSchedules = userSchedules.filter(s => s.adId === adId);
+        // D'abord chercher dans la mémoire
+        let userSchedules = schedules.get(userId) || [];
+        let adSchedules = userSchedules.filter(s => s.adId === adId);
+        
+        // Si pas trouvé en mémoire, chercher dans la base de données
+        if (adSchedules.length === 0) {
+            console.log('⚠️ No schedules found in memory, checking database...');
+            try {
+                const { data: dbSchedules, error } = await supabase
+                    .from('schedules')
+                    .select('*')
+                    .eq('user_id', userId)
+                    .eq('ad_id', adId);
+                
+                if (error) {
+                    console.error('⚠️ Error loading schedules from DB:', error);
+                } else if (dbSchedules && dbSchedules.length > 0) {
+                    console.log(`✅ Found ${dbSchedules.length} schedule(s) in database, loading to memory...`);
+                    // Convertir et charger dans la mémoire
+                    adSchedules = dbSchedules.map(dbToScheduleData);
+                    
+                    // Mettre à jour la Map mémoire pour les prochaines requêtes
+                    if (!schedules.has(userId)) {
+                        schedules.set(userId, []);
+                    }
+                    // Ajouter les schedules trouvés à la mémoire (éviter les doublons)
+                    const existingAdIds = new Set(schedules.get(userId)!.map(s => `${s.adId}_${s.scheduleType}`));
+                    for (const schedule of adSchedules) {
+                        const key = `${schedule.adId}_${schedule.scheduleType}`;
+                        if (!existingAdIds.has(key)) {
+                            schedules.get(userId)!.push(schedule);
+                        }
+                    }
+                    console.log('✅ Schedules loaded from database to memory');
+                }
+            } catch (dbError) {
+                console.error('⚠️ Error loading schedules from database:', dbError);
+                // Continue avec les schedules vides
+            }
+        }
         
         const now = new Date();
         const currentMinutes = now.getHours() * 60 + now.getMinutes();
@@ -1352,7 +1390,7 @@ export async function getAdSchedules(req: Request, res: Response) {
             startTime2: schedule.startMinutes2 ? `${Math.floor(schedule.startMinutes2 / 60)}:${(schedule.startMinutes2 % 60).toString().padStart(2, '0')}` : null
         }));
         
-        console.log('✅ Found schedules for ad:', schedulesInfo);
+        console.log(`✅ Found ${schedulesInfo.length} schedule(s) for ad:`, schedulesInfo);
         
         return res.json({
             success: true,
