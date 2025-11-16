@@ -44,19 +44,22 @@ function scheduleDataToDb(schedule: ScheduleData, userId: string): any {
 
 // Fonction helper pour convertir format DB vers ScheduleData
 function dbToScheduleData(dbRow: any): ScheduleData {
+    // Convertir null en undefined pour la cohérence
+    const toUndefined = (value: any) => value === null ? undefined : value;
+    
     return {
         adId: dbRow.ad_id,
         scheduleType: dbRow.schedule_type,
         scheduledDate: dbRow.scheduled_date,
         timezone: dbRow.timezone,
-        startMinutes: dbRow.start_minutes ?? undefined,
-        endMinutes: dbRow.end_minutes ?? undefined,
-        stopMinutes1: dbRow.stop_minutes_1 ?? undefined,
-        stopMinutes2: dbRow.stop_minutes_2 ?? undefined,
-        startMinutes2: dbRow.start_minutes_2 ?? undefined,
-        executedAt: dbRow.executed_at ?? undefined,
-        lastAction: dbRow.last_action ?? undefined,
-        lastExecutionDate: dbRow.last_execution_date ?? undefined
+        startMinutes: toUndefined(dbRow.start_minutes),
+        endMinutes: toUndefined(dbRow.end_minutes),
+        stopMinutes1: toUndefined(dbRow.stop_minutes_1),
+        stopMinutes2: toUndefined(dbRow.stop_minutes_2),
+        startMinutes2: toUndefined(dbRow.start_minutes_2),
+        executedAt: toUndefined(dbRow.executed_at),
+        lastAction: toUndefined(dbRow.last_action),
+        lastExecutionDate: toUndefined(dbRow.last_execution_date)
     };
 }
 
@@ -100,42 +103,94 @@ export async function loadSchedulesFromDB() {
     }
 }
 
-// Fonction helper pour vérifier si l'heure actuelle correspond à une heure cible (avec fenêtre de 2 minutes)
-function isTimeMatch(currentMinutes: number, targetMinutes: number, windowMinutes: number = 2): boolean {
-    // Gérer le cas où on passe minuit (targetMinutes peut être proche de 0 ou 1440)
-    if (targetMinutes === 0) {
-        // Pour minuit, vérifier dans une fenêtre autour de 0
-        return currentMinutes >= 0 && currentMinutes < windowMinutes;
+// Fonction helper pour obtenir l'heure actuelle dans un timezone spécifique (en minutes depuis minuit)
+function getCurrentMinutesInTimezone(timezone: string): number {
+    try {
+        // Créer une date formatter pour le timezone spécifié
+        const now = new Date();
+        const formatter = new Intl.DateTimeFormat('en-US', {
+            timeZone: timezone,
+            hour: 'numeric',
+            minute: 'numeric',
+            hour12: false
+        });
+        
+        const parts = formatter.formatToParts(now);
+        const hour = parseInt(parts.find(p => p.type === 'hour')?.value || '0', 10);
+        const minute = parseInt(parts.find(p => p.type === 'minute')?.value || '0', 10);
+        
+        return hour * 60 + minute;
+    } catch (error) {
+        console.error(`⚠️ Error getting time in timezone ${timezone}, falling back to local time:`, error);
+        // Fallback: utiliser l'heure locale du serveur
+        const now = new Date();
+        return now.getHours() * 60 + now.getMinutes();
+    }
+}
+
+// Fonction helper pour obtenir la date actuelle dans un timezone spécifique (format: YYYY-MM-DD)
+function getCurrentDateInTimezone(timezone: string): string {
+    try {
+        const now = new Date();
+        const formatter = new Intl.DateTimeFormat('en-CA', { // 'en-CA' donne le format YYYY-MM-DD
+            timeZone: timezone,
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit'
+        });
+        
+        return formatter.format(now);
+    } catch (error) {
+        console.error(`⚠️ Error getting date in timezone ${timezone}, falling back to UTC:`, error);
+        // Fallback: utiliser la date UTC
+        const now = new Date();
+        return now.toISOString().split('T')[0];
+    }
+}
+
+// Fonction helper pour vérifier si l'heure actuelle correspond à une heure cible (avec fenêtre de 5 minutes pour plus de sécurité)
+function isTimeMatch(currentMinutes: number, targetMinutes: number, windowMinutes: number = 5): boolean {
+    // Normaliser les minutes (0-1439)
+    const normalizedCurrent = currentMinutes % 1440;
+    const normalizedTarget = targetMinutes % 1440;
+    
+    // Gérer le cas spécial de minuit (00:00)
+    if (normalizedTarget === 0) {
+        // Pour minuit, vérifier dans une fenêtre autour de 0 (23:55-00:05)
+        return normalizedCurrent >= (1440 - windowMinutes) || normalizedCurrent < windowMinutes;
     }
     
     // Vérifier dans une fenêtre autour de l'heure cible
-    const lowerBound = targetMinutes - windowMinutes;
-    const upperBound = targetMinutes + windowMinutes;
+    const lowerBound = normalizedTarget - windowMinutes;
+    const upperBound = normalizedTarget + windowMinutes;
     
-    // Gérer le cas où la fenêtre dépasse minuit
+    // Gérer le cas où la fenêtre dépasse minuit (ex: target = 1, window = 5 → 23:56-00:06)
     if (lowerBound < 0) {
-        return currentMinutes >= (1440 + lowerBound) || currentMinutes <= upperBound;
+        return normalizedCurrent >= (1440 + lowerBound) || normalizedCurrent <= upperBound;
     }
     
-    // Gérer le cas où la fenêtre dépasse 24h
+    // Gérer le cas où la fenêtre dépasse 24h (ex: target = 1435, window = 5 → 23:30-00:00)
     if (upperBound >= 1440) {
-        return currentMinutes >= lowerBound || currentMinutes <= (upperBound - 1440);
+        return normalizedCurrent >= lowerBound || normalizedCurrent <= (upperBound - 1440);
     }
     
-    return currentMinutes >= lowerBound && currentMinutes <= upperBound;
+    // Cas normal : fenêtre complètement dans la journée
+    return normalizedCurrent >= lowerBound && normalizedCurrent <= upperBound;
 }
 
 // Fonction pour vérifier si un schedule doit être exécuté
 function checkIfScheduleShouldExecute(schedule: ScheduleData, now: Date): { shouldExecute: boolean; action?: string } {
     const scheduledTime = new Date(schedule.scheduledDate);
-    const currentMinutes = now.getHours() * 60 + now.getMinutes();
-    const currentDate = now.toISOString().split('T')[0]; // Format: YYYY-MM-DD
+    // IMPORTANT: Utiliser le timezone du schedule pour calculer l'heure actuelle
+    const currentMinutes = getCurrentMinutesInTimezone(schedule.timezone);
+    // Pour la date, on doit aussi utiliser le timezone du schedule
+    const currentDateInTimezone = getCurrentDateInTimezone(schedule.timezone); // Format: YYYY-MM-DD
     
-    console.log(`🔍 Checking schedule for ad ${schedule.adId}:`, {
+    console.log(`🔍 Checking schedule for ad ${schedule.adId} (timezone: ${schedule.timezone}):`, {
         scheduleType: schedule.scheduleType,
         currentMinutes,
+        currentDate: currentDateInTimezone,
         lastExecutionDate: schedule.lastExecutionDate,
-        currentDate,
         lastAction: schedule.lastAction
     });
     
@@ -151,37 +206,145 @@ function checkIfScheduleShouldExecute(schedule: ScheduleData, now: Date): { shou
                            schedule.stopMinutes2 === undefined && 
                            schedule.startMinutes2 === undefined;
         
+        console.log(`🔍 Schedule type detection for ad ${schedule.adId}:`, {
+            has4Actions,
+            has2Actions,
+            stopMinutes1: schedule.stopMinutes1,
+            startMinutes: schedule.startMinutes,
+            stopMinutes2: schedule.stopMinutes2,
+            startMinutes2: schedule.startMinutes2
+        });
+        
         if (has4Actions) {
             // Gérer RECURRING_DAILY avec 4 actions
+            // Cycle: STOP_1 → ACTIVE_1 → STOP_2 → ACTIVE_2 → STOP_1 (jour suivant) ...
+            
             // Vérifier si on a déjà exécuté une action aujourd'hui
-            if (schedule.lastExecutionDate === currentDate && schedule.lastAction) {
+            if (schedule.lastExecutionDate === currentDateInTimezone && schedule.lastAction) {
                 console.log(`⏰ Already executed ${schedule.lastAction} today for ad ${schedule.adId}`);
+                console.log(`🔍 4-actions schedule check: currentMinutes=${currentMinutes}, stopMinutes1=${schedule.stopMinutes1}, startMinutes=${schedule.startMinutes}, stopMinutes2=${schedule.stopMinutes2}, startMinutes2=${schedule.startMinutes2}`);
                 
-                // Déterminer quelle est la prochaine action à exécuter
-                if (schedule.lastAction === 'STOP_1' && isTimeMatch(currentMinutes, schedule.startMinutes!)) {
-                    console.log(`🟢 Time for ACTIVE_1 at ${currentMinutes} (target: ${schedule.startMinutes})`);
+                // Déterminer quelle est la prochaine action à exécuter selon la dernière action
+                if (schedule.lastAction === 'STOP_1') {
+                    // Après STOP_1, on doit exécuter ACTIVE_1
+                    if (isTimeMatch(currentMinutes, schedule.startMinutes!)) {
+                        console.log(`🟢 Time for ACTIVE_1 at ${currentMinutes} (target: ${schedule.startMinutes})`);
+                        return { shouldExecute: true, action: 'ACTIVE_1' };
+                    } else if (currentMinutes >= schedule.startMinutes!) {
+                        // Si on a dépassé l'heure d'ACTIVE_1, l'exécuter quand même (rattrapage)
+                        console.log(`🟢 Executing ACTIVE_1 (catch-up) at ${currentMinutes} (target was: ${schedule.startMinutes})`);
+                        return { shouldExecute: true, action: 'ACTIVE_1' };
+                    } else {
+                        const nextActionTime = `${Math.floor(schedule.startMinutes! / 60)}:${(schedule.startMinutes! % 60).toString().padStart(2, '0')}`;
+                        console.log(`⏳ Waiting for ACTIVE_1 at ${nextActionTime} (current: ${currentMinutes}, target: ${schedule.startMinutes})`);
+                    }
+                } else if (schedule.lastAction === 'ACTIVE_1') {
+                    // Après ACTIVE_1, on doit exécuter STOP_2
+                    if (isTimeMatch(currentMinutes, schedule.stopMinutes2!)) {
+                        console.log(`🔴 Time for STOP_2 at ${currentMinutes} (target: ${schedule.stopMinutes2})`);
+                        return { shouldExecute: true, action: 'STOP_2' };
+                    } else if (currentMinutes >= schedule.stopMinutes2!) {
+                        // Si on a dépassé l'heure de STOP_2, l'exécuter quand même (rattrapage)
+                        console.log(`🔴 Executing STOP_2 (catch-up) at ${currentMinutes} (target was: ${schedule.stopMinutes2})`);
+                        return { shouldExecute: true, action: 'STOP_2' };
+                    } else {
+                        const nextActionTime = `${Math.floor(schedule.stopMinutes2! / 60)}:${(schedule.stopMinutes2! % 60).toString().padStart(2, '0')}`;
+                        console.log(`⏳ Waiting for STOP_2 at ${nextActionTime} (current: ${currentMinutes}, target: ${schedule.stopMinutes2})`);
+                    }
+                } else if (schedule.lastAction === 'STOP_2') {
+                    // Après STOP_2, on doit exécuter ACTIVE_2
+                    if (isTimeMatch(currentMinutes, schedule.startMinutes2!)) {
+                        console.log(`🟢 Time for ACTIVE_2 at ${currentMinutes} (target: ${schedule.startMinutes2})`);
+                        return { shouldExecute: true, action: 'ACTIVE_2' };
+                    } else if (currentMinutes >= schedule.startMinutes2!) {
+                        // Si on a dépassé l'heure d'ACTIVE_2, l'exécuter quand même (rattrapage)
+                        console.log(`🟢 Executing ACTIVE_2 (catch-up) at ${currentMinutes} (target was: ${schedule.startMinutes2})`);
+                        return { shouldExecute: true, action: 'ACTIVE_2' };
+                    } else {
+                        const nextActionTime = `${Math.floor(schedule.startMinutes2! / 60)}:${(schedule.startMinutes2! % 60).toString().padStart(2, '0')}`;
+                        console.log(`⏳ Waiting for ACTIVE_2 at ${nextActionTime} (current: ${currentMinutes}, target: ${schedule.startMinutes2})`);
+                    }
+                } else if (schedule.lastAction === 'ACTIVE_2') {
+                    // Après ACTIVE_2, on attend normalement STOP_1 le jour suivant
+                    // MAIS vérifier d'abord si on est dans la fenêtre de STOP_1 aujourd'hui
+                    // Cela peut arriver si STOP_1 a été sauté au début de la journée
+                    const isStop1Time = isTimeMatch(currentMinutes, schedule.stopMinutes1!);
+                    console.log(`🔍 Checking STOP_1 recovery: currentMinutes=${currentMinutes}, stopMinutes1=${schedule.stopMinutes1}, isTimeMatch=${isStop1Time}`);
+                    if (isStop1Time) {
+                        // On est exactement à l'heure de STOP_1, l'exécuter même si ACTIVE_2 a déjà été exécuté
+                        // Cela signifie qu'on a peut-être sauté STOP_1 au début de la journée
+                        console.log(`🔴 Executing STOP_1 (recovery) at ${currentMinutes} - missed at start of day`);
+                        return { shouldExecute: true, action: 'STOP_1' };
+                    }
+                    // Vérifier si on est dans une fenêtre où on devrait exécuter STOP_2 ou ACTIVE_2
+                    // Cela peut arriver si ACTIVE_2 a été exécuté par erreur avant STOP_2
+                    if (currentMinutes >= schedule.stopMinutes2! && currentMinutes <= schedule.startMinutes2! + 5) {
+                        // On est dans la fenêtre de STOP_2 ou ACTIVE_2, mais ACTIVE_2 a déjà été exécuté
+                        // Cela signifie qu'on a peut-être sauté STOP_2 ou exécuté ACTIVE_2 trop tôt
+                        // Si on est exactement à l'heure de STOP_2, l'exécuter quand même
+                        if (isTimeMatch(currentMinutes, schedule.stopMinutes2!)) {
+                            console.log(`🔴 Executing STOP_2 (recovery) at ${currentMinutes} - ACTIVE_2 was executed too early`);
+                            return { shouldExecute: true, action: 'STOP_2' };
+                        } else if (currentMinutes >= schedule.stopMinutes2! && currentMinutes < schedule.startMinutes2!) {
+                            // On est entre STOP_2 et ACTIVE_2, mais ACTIVE_2 a déjà été exécuté
+                            // On ne peut pas revenir en arrière, mais on peut loguer l'incohérence
+                            console.log(`⚠️ Inconsistent state: ACTIVE_2 already executed but current time (${currentMinutes}) is between STOP_2 (${schedule.stopMinutes2}) and ACTIVE_2 (${schedule.startMinutes2})`);
+                        }
+                    }
+                    const nextActionTime = `${Math.floor(schedule.stopMinutes1! / 60)}:${(schedule.stopMinutes1! % 60).toString().padStart(2, '0')}`;
+                    console.log(`⏳ Already executed ACTIVE_2 today, waiting for STOP_1 tomorrow at ${nextActionTime} (current: ${currentMinutes})`);
+                }
+            } else if (schedule.lastExecutionDate !== currentDateInTimezone || !schedule.lastAction) {
+                // Nouveau jour ou première exécution - vérifier quelle action doit être exécutée
+                // L'ordre logique est: STOP_1 → ACTIVE_1 → STOP_2 → ACTIVE_2
+                
+                // Si on est dans la fenêtre pour STOP_1, exécuter STOP_1
+                if (isTimeMatch(currentMinutes, schedule.stopMinutes1!)) {
+                    console.log(`🔴 Time for STOP_1 (new day/first execution) at ${currentMinutes} (target: ${schedule.stopMinutes1})`);
+                    return { shouldExecute: true, action: 'STOP_1' };
+                }
+                // Si on est dans la fenêtre pour ACTIVE_1, exécuter ACTIVE_1
+                else if (isTimeMatch(currentMinutes, schedule.startMinutes!)) {
+                    console.log(`🟢 Time for ACTIVE_1 (new day/first execution) at ${currentMinutes} (target: ${schedule.startMinutes})`);
                     return { shouldExecute: true, action: 'ACTIVE_1' };
-                } else if (schedule.lastAction === 'ACTIVE_1' && isTimeMatch(currentMinutes, schedule.stopMinutes2!)) {
-                    console.log(`🔴 Time for STOP_2 at ${currentMinutes} (target: ${schedule.stopMinutes2})`);
+                }
+                // Si on est dans la fenêtre pour STOP_2, exécuter STOP_2
+                else if (isTimeMatch(currentMinutes, schedule.stopMinutes2!)) {
+                    console.log(`🔴 Time for STOP_2 (new day/first execution) at ${currentMinutes} (target: ${schedule.stopMinutes2})`);
                     return { shouldExecute: true, action: 'STOP_2' };
-                } else if (schedule.lastAction === 'STOP_2' && isTimeMatch(currentMinutes, schedule.startMinutes2!)) {
-                    console.log(`🟢 Time for ACTIVE_2 at ${currentMinutes} (target: ${schedule.startMinutes2})`);
+                }
+                // Si on est dans la fenêtre pour ACTIVE_2, exécuter ACTIVE_2
+                else if (isTimeMatch(currentMinutes, schedule.startMinutes2!)) {
+                    console.log(`🟢 Time for ACTIVE_2 (new day/first execution) at ${currentMinutes} (target: ${schedule.startMinutes2})`);
                     return { shouldExecute: true, action: 'ACTIVE_2' };
                 }
-            } else if (schedule.lastExecutionDate !== currentDate || !schedule.lastAction) {
-                // Nouveau jour ou première exécution - vérifier quelle action doit être exécutée
-                if (isTimeMatch(currentMinutes, schedule.stopMinutes1!)) {
-                    console.log(`🔴 Time for STOP_1 (new day) at ${currentMinutes} (target: ${schedule.stopMinutes1})`);
-                    return { shouldExecute: true, action: 'STOP_1' };
-                } else if (isTimeMatch(currentMinutes, schedule.startMinutes!)) {
-                    console.log(`🟢 Time for ACTIVE_1 (new day) at ${currentMinutes} (target: ${schedule.startMinutes})`);
-                    return { shouldExecute: true, action: 'ACTIVE_1' };
-                } else if (isTimeMatch(currentMinutes, schedule.stopMinutes2!)) {
-                    console.log(`🔴 Time for STOP_2 (new day) at ${currentMinutes} (target: ${schedule.stopMinutes2})`);
-                    return { shouldExecute: true, action: 'STOP_2' };
-                } else if (isTimeMatch(currentMinutes, schedule.startMinutes2!)) {
-                    console.log(`🟢 Time for ACTIVE_2 (new day) at ${currentMinutes} (target: ${schedule.startMinutes2})`);
-                    return { shouldExecute: true, action: 'ACTIVE_2' };
+                // Sinon, déterminer quelle est la prochaine action selon l'heure actuelle
+                else {
+                    // Si on est entre STOP_1 et ACTIVE_1, attendre ACTIVE_1
+                    if (currentMinutes > schedule.stopMinutes1! && currentMinutes < schedule.startMinutes!) {
+                        const nextActionTime = `${Math.floor(schedule.startMinutes! / 60)}:${(schedule.startMinutes! % 60).toString().padStart(2, '0')}`;
+                        console.log(`⏳ Between STOP_1 and ACTIVE_1, waiting for ACTIVE_1 at ${nextActionTime} (current: ${currentMinutes})`);
+                    }
+                    // Si on est entre ACTIVE_1 et STOP_2, attendre STOP_2
+                    else if (currentMinutes > schedule.startMinutes! && currentMinutes < schedule.stopMinutes2!) {
+                        const nextActionTime = `${Math.floor(schedule.stopMinutes2! / 60)}:${(schedule.stopMinutes2! % 60).toString().padStart(2, '0')}`;
+                        console.log(`⏳ Between ACTIVE_1 and STOP_2, waiting for STOP_2 at ${nextActionTime} (current: ${currentMinutes})`);
+                    }
+                    // Si on est entre STOP_2 et ACTIVE_2, attendre ACTIVE_2
+                    else if (currentMinutes > schedule.stopMinutes2! && currentMinutes < schedule.startMinutes2!) {
+                        const nextActionTime = `${Math.floor(schedule.startMinutes2! / 60)}:${(schedule.startMinutes2! % 60).toString().padStart(2, '0')}`;
+                        console.log(`⏳ Between STOP_2 and ACTIVE_2, waiting for ACTIVE_2 at ${nextActionTime} (current: ${currentMinutes})`);
+                    }
+                    // Si on est après ACTIVE_2, attendre STOP_1 le jour suivant
+                    else if (currentMinutes > schedule.startMinutes2!) {
+                        const nextActionTime = `${Math.floor(schedule.stopMinutes1! / 60)}:${(schedule.stopMinutes1! % 60).toString().padStart(2, '0')}`;
+                        console.log(`⏳ After ACTIVE_2 today, waiting for STOP_1 tomorrow at ${nextActionTime} (current: ${currentMinutes})`);
+                    }
+                    // Si on est avant STOP_1, attendre STOP_1
+                    else {
+                        const nextActionTime = `${Math.floor(schedule.stopMinutes1! / 60)}:${(schedule.stopMinutes1! % 60).toString().padStart(2, '0')}`;
+                        console.log(`⏳ Before STOP_1, waiting for STOP_1 at ${nextActionTime} (current: ${currentMinutes})`);
+                    }
                 }
             }
         } else if (has2Actions) {
@@ -191,7 +354,7 @@ function checkIfScheduleShouldExecute(schedule: ScheduleData, now: Date): { shou
             const stop1Minutes = schedule.stopMinutes1!;
             const active1Minutes = schedule.startMinutes!;
             
-            if (schedule.lastExecutionDate === currentDate && schedule.lastAction) {
+            if (schedule.lastExecutionDate === currentDateInTimezone && schedule.lastAction) {
                 // On a déjà exécuté une action aujourd'hui
                 console.log(`⏰ Already executed ${schedule.lastAction} today for ad ${schedule.adId}`);
                 
@@ -575,6 +738,12 @@ export async function executeSchedules() {
         let totalSchedules = 0;
         let executedSchedules = 0;
         
+        // Si la Map est vide, essayer de charger depuis la DB
+        if (schedules.size === 0) {
+            console.log('⚠️ No schedules in memory, loading from database...');
+            await loadSchedulesFromDB();
+        }
+        
         // Compter le nombre total de schedules
         for (const userSchedules of schedules.values()) {
             totalSchedules += userSchedules.length;
@@ -582,7 +751,7 @@ export async function executeSchedules() {
         
         // Ne logger que s'il y a des schedules actifs
         if (totalSchedules > 0) {
-            console.log(`🕐 Checking ${totalSchedules} active schedule(s)...`);
+            console.log(`🕐 Checking ${totalSchedules} active schedule(s) at ${now.toISOString()}...`);
         }
         
         for (const [userId, userSchedules] of schedules.entries()) {
@@ -590,6 +759,30 @@ export async function executeSchedules() {
             for (const schedule of userSchedules) {
                 // Vérifier si le schedule doit être exécuté maintenant
                 const checkResult = checkIfScheduleShouldExecute(schedule, now);
+                
+                // Log détaillé pour déboguer
+                if (schedule.scheduleType === 'RECURRING_DAILY') {
+                    // Utiliser le timezone du schedule pour le logging aussi
+                    const currentMinutes = getCurrentMinutesInTimezone(schedule.timezone);
+                    const has4Actions = schedule.stopMinutes1 !== undefined && 
+                                       schedule.startMinutes !== undefined && 
+                                       schedule.stopMinutes2 !== undefined && 
+                                       schedule.startMinutes2 !== undefined;
+                    console.log(`🔍 Checking schedule for ad ${schedule.adId} (timezone: ${schedule.timezone}):`, {
+                        scheduleType: schedule.scheduleType,
+                        has4Actions,
+                        currentMinutes,
+                        stopMinutes1: schedule.stopMinutes1,
+                        startMinutes: schedule.startMinutes,
+                        stopMinutes2: schedule.stopMinutes2,
+                        startMinutes2: schedule.startMinutes2,
+                        lastAction: schedule.lastAction,
+                        lastExecutionDate: schedule.lastExecutionDate,
+                        shouldExecute: checkResult.shouldExecute,
+                        action: checkResult.action
+                    });
+                }
+                
                 if (checkResult.shouldExecute && checkResult.action) {
                     console.log(`⚡ Executing schedule for ad ${schedule.adId} - Action: ${checkResult.action}`);
                     
@@ -648,6 +841,7 @@ export async function executeSchedules() {
                         }
                         
                         console.log(`🔄 ${actionDescription} ad ${schedule.adId} to status: ${newStatus}`);
+                        console.log(`📡 Calling Facebook API to update ad ${schedule.adId} status to ${newStatus}...`);
                         
                         // Appeler l'API Facebook pour changer le statut
                         const response = await fetch(`https://graph.facebook.com/v18.0/${schedule.adId}`, {
@@ -661,9 +855,28 @@ export async function executeSchedules() {
                             })
                         });
                         
-                        // Vérifier si le token est expiré
+                        console.log(`📡 Facebook API response status: ${response.status} ${response.statusText}`);
+                        
+                        // Lire la réponse (cloner d'abord pour pouvoir la relire si nécessaire)
+                        let responseData: any = null;
+                        try {
+                            const responseText = await response.text();
+                            if (responseText) {
+                                try {
+                                    responseData = JSON.parse(responseText);
+                                    console.log(`📡 Facebook API response data:`, responseData);
+                                } catch (parseError) {
+                                    console.log(`📡 Facebook API response text:`, responseText);
+                                    responseData = { rawResponse: responseText };
+                                }
+                            }
+                        } catch (readError) {
+                            console.error('⚠️ Error reading Facebook API response:', readError);
+                        }
+                        
+                        // Vérifier si le token est expiré ou si la requête a échoué
                         if (!response.ok) {
-                            const errorData = await response.json();
+                            const errorData = responseData || { error: 'Unknown error', message: 'Failed to parse error response' };
                             console.error('❌ Facebook API error:', errorData);
                             
                             // Log de l'erreur d'exécution
@@ -695,10 +908,12 @@ export async function executeSchedules() {
                                 // Marquer le token comme expiré ou supprimer le schedule
                                 continue; // Passer au schedule suivant
                             }
-                        }
-                        
-                        if (response.ok) {
-                            console.log('✅ Schedule executed successfully for ad:', schedule.adId);
+                        } else {
+                            // Succès
+                            console.log(`✅ Schedule executed successfully for ad ${schedule.adId} - Status changed to: ${newStatus}`);
+                            if (responseData) {
+                                console.log(`✅ Facebook API success response:`, responseData);
+                            }
                             executedSchedules++;
                             
                             // Log de l'exécution avec informations détaillées
@@ -734,11 +949,12 @@ export async function executeSchedules() {
                             if (schedule.scheduleType === 'RECURRING_DAILY') {
                                 // Pour recurring daily, garder le schedule et mettre à jour les infos d'exécution
                                 console.log('🔁 Recurring daily schedule - keeping for next execution');
-                                const currentDate = now.toISOString().split('T')[0];
-                                schedule.lastExecutionDate = currentDate;
+                                // Utiliser la date dans le timezone du schedule
+                                const currentDateInTimezone = getCurrentDateInTimezone(schedule.timezone);
+                                schedule.lastExecutionDate = currentDateInTimezone;
                                 schedule.lastAction = actionType;
                                 schedule.executedAt = now.toISOString();
-                                console.log(`✅ Updated recurring schedule: lastAction=${actionType}, lastExecutionDate=${currentDate}`);
+                                console.log(`✅ Updated recurring schedule: lastAction=${actionType}, lastExecutionDate=${currentDateInTimezone} (timezone: ${schedule.timezone})`);
                                 
                                 // Mettre à jour dans la DB
                                 try {
@@ -746,7 +962,7 @@ export async function executeSchedules() {
                                         .from('schedules')
                                         .update({
                                             last_action: actionType,
-                                            last_execution_date: currentDate,
+                                            last_execution_date: currentDateInTimezone,
                                             executed_at: now.toISOString(),
                                             updated_at: now.toISOString()
                                         })
@@ -814,10 +1030,6 @@ export async function executeSchedules() {
                                     console.error('⚠️ Error removing schedule from DB:', dbError);
                                 }
                             }
-                        } else {
-                            console.error('❌ Failed to execute schedule for ad:', schedule.adId);
-                            const errorData = await response.json();
-                            console.error('❌ Facebook API error:', errorData);
                         }
                         
                     } catch (error) {
