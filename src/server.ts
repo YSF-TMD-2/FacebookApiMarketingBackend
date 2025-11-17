@@ -404,8 +404,40 @@ app.get("/facebook/data", async (req, res) => {
 });
 
 // 🔍 Endpoints Facebook de compatibilité (sans /api) - Version avec validation
+// Rate limiting simple pour /facebook/token (Map pour stocker les timestamps des requêtes par IP)
+const tokenRequestTimestamps = new Map<string, number[]>();
+const TOKEN_RATE_LIMIT_WINDOW = 60000; // 1 minute
+const TOKEN_RATE_LIMIT_MAX_REQUESTS = 3; // Max 3 requêtes par minute
+
 app.post("/facebook/token", async (req, res) => {
   try {
+    // Rate limiting simple basé sur l'IP
+    const clientIp = req.ip || req.headers['x-forwarded-for'] || req.connection.remoteAddress || 'unknown';
+    const now = Date.now();
+    
+    // Nettoyer les anciennes requêtes
+    const requests = tokenRequestTimestamps.get(clientIp) || [];
+    const recentRequests = requests.filter(timestamp => now - timestamp < TOKEN_RATE_LIMIT_WINDOW);
+    
+    // Vérifier le rate limit
+    if (recentRequests.length >= TOKEN_RATE_LIMIT_MAX_REQUESTS) {
+      const oldestRequest = Math.min(...recentRequests);
+      const waitTime = Math.ceil((TOKEN_RATE_LIMIT_WINDOW - (now - oldestRequest)) / 1000);
+      
+      console.warn(`⚠️ Rate limit exceeded for IP ${clientIp}: ${recentRequests.length} requests in ${TOKEN_RATE_LIMIT_WINDOW}ms`);
+      
+      return res.status(429).json({
+        message: `Too many requests. Please wait ${waitTime} seconds before trying again.`,
+        error: "RATE_LIMIT",
+        retryAfter: waitTime,
+        success: false
+      });
+    }
+    
+    // Ajouter cette requête à la liste
+    recentRequests.push(now);
+    tokenRequestTimestamps.set(clientIp, recentRequests);
+    
     const { accessToken } = req.body;
     
     if (!accessToken) {
@@ -421,6 +453,16 @@ app.post("/facebook/token", async (req, res) => {
       const validationData = await validationResponse.json();
       
       if (validationData.error) {
+        // Gestion spécifique des erreurs Facebook rate limit
+        if (validationData.error.code === 4 || validationData.error.code === 17) {
+          return res.status(429).json({
+            message: "Facebook API rate limit reached. Please try again in a few minutes.",
+            error: "RATE_LIMIT",
+            retryAfter: 1800,
+            success: false
+          });
+        }
+        
         return res.status(400).json({
           message: "Invalid Facebook token",
           error: validationData.error,
@@ -439,19 +481,31 @@ app.post("/facebook/token", async (req, res) => {
         timestamp: new Date().toISOString()
       });
       
-    } catch (validationError) {
+    } catch (validationError: any) {
       console.error('Token validation error:', validationError);
+      
+      // Gestion des erreurs de rate limit Facebook
+      if (validationError.message?.includes("429") || validationError.message?.includes("rate limit")) {
+        return res.status(429).json({
+          message: "Facebook API rate limit reached. Please try again in a few minutes.",
+          error: "RATE_LIMIT",
+          retryAfter: 1800,
+          success: false
+        });
+      }
+      
       return res.status(400).json({
         message: "Failed to validate Facebook token",
         error: validationError.message,
         success: false
       });
     }
-  } catch (error) {
+  } catch (error: any) {
     console.error('Error in Facebook token endpoint:', error);
     res.status(500).json({
       message: "Error processing Facebook token",
-      error: error.message
+      error: error.message,
+      success: false
     });
   }
 });

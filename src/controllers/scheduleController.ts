@@ -66,23 +66,23 @@ function dbToScheduleData(dbRow: any): ScheduleData {
 // Charger tous les schedules depuis la base de données au démarrage
 export async function loadSchedulesFromDB() {
     try {
-        console.log('🔄 Loading schedules from database...');
+        console.log(' Loading schedules from database...');
         const { data: dbSchedules, error } = await supabase
             .from('schedules')
             .select('*');
         
         if (error) {
-            console.error('❌ Error loading schedules from DB:', error);
+            console.error(' Error loading schedules from DB:', error);
             // Si la table n'existe pas encore, on continue sans erreur
             if (error.code === 'PGRST116' || error.message?.includes('does not exist')) {
-                console.log('⚠️ Schedules table does not exist yet. It will be created on first schedule creation.');
+                console.log(' Schedules table does not exist yet. It will be created on first schedule creation.');
                 return;
             }
             throw error;
         }
         
         if (!dbSchedules || dbSchedules.length === 0) {
-            console.log('✅ No schedules found in database');
+            console.log(' No schedules found in database');
             return;
         }
         
@@ -96,9 +96,9 @@ export async function loadSchedulesFromDB() {
             schedules.get(userId)!.push(dbToScheduleData(dbSchedule));
         }
         
-        console.log(`✅ Loaded ${dbSchedules.length} schedule(s) from database for ${schedules.size} user(s)`);
+        console.log(` Loaded ${dbSchedules.length} schedule(s) from database for ${schedules.size} user(s)`);
     } catch (error) {
-        console.error('❌ Error in loadSchedulesFromDB:', error);
+        console.error(' Error in loadSchedulesFromDB:', error);
         // Ne pas bloquer le démarrage si le chargement échoue
     }
 }
@@ -119,9 +119,16 @@ function getCurrentMinutesInTimezone(timezone: string): number {
         const hour = parseInt(parts.find(p => p.type === 'hour')?.value || '0', 10);
         const minute = parseInt(parts.find(p => p.type === 'minute')?.value || '0', 10);
         
-        return hour * 60 + minute;
+        const totalMinutes = hour * 60 + minute;
+        
+        // Log pour déboguer la transition de minuit
+        if (totalMinutes === 0 || totalMinutes === 1) {
+            console.log(` Midnight transition check (timezone: ${timezone}): currentMinutes=${totalMinutes}, hour=${hour}, minute=${minute}, UTC time=${now.toISOString()}`);
+        }
+        
+        return totalMinutes;
     } catch (error) {
-        console.error(`⚠️ Error getting time in timezone ${timezone}, falling back to local time:`, error);
+        console.error(` Error getting time in timezone ${timezone}, falling back to local time:`, error);
         // Fallback: utiliser l'heure locale du serveur
         const now = new Date();
         return now.getHours() * 60 + now.getMinutes();
@@ -139,9 +146,28 @@ function getCurrentDateInTimezone(timezone: string): string {
             day: '2-digit'
         });
         
-        return formatter.format(now);
+        const dateStr = formatter.format(now);
+        
+        // Log pour déboguer la transition de minuit et le changement de jour
+        // Vérifier l'heure directement sans appeler getCurrentMinutesInTimezone pour éviter la récursion
+        const timeFormatter = new Intl.DateTimeFormat('en-US', {
+            timeZone: timezone,
+            hour: 'numeric',
+            minute: 'numeric',
+            hour12: false
+        });
+        const timeParts = timeFormatter.formatToParts(now);
+        const hour = parseInt(timeParts.find(p => p.type === 'hour')?.value || '0', 10);
+        const minute = parseInt(timeParts.find(p => p.type === 'minute')?.value || '0', 10);
+        const currentMinutes = hour * 60 + minute;
+        
+        if (currentMinutes === 0 || currentMinutes === 1) {
+            console.log(`Date check at midnight (timezone: ${timezone}): currentDate=${dateStr}, currentMinutes=${currentMinutes}, UTC time=${now.toISOString()}`);
+        }
+        
+        return dateStr;
     } catch (error) {
-        console.error(`⚠️ Error getting date in timezone ${timezone}, falling back to UTC:`, error);
+        console.error(` Error getting date in timezone ${timezone}, falling back to UTC:`, error);
         // Fallback: utiliser la date UTC
         const now = new Date();
         return now.toISOString().split('T')[0];
@@ -185,6 +211,23 @@ function checkIfScheduleShouldExecute(schedule: ScheduleData, now: Date): { shou
     const currentMinutes = getCurrentMinutesInTimezone(schedule.timezone);
     // Pour la date, on doit aussi utiliser le timezone du schedule
     const currentDateInTimezone = getCurrentDateInTimezone(schedule.timezone); // Format: YYYY-MM-DD
+    
+    // Log détaillé pour la transition de minuit (00h00 → 00h01)
+    const isMidnightTransition = currentMinutes === 0 || currentMinutes === 1;
+    if (isMidnightTransition) {
+        const dateChanged = schedule.lastExecutionDate !== currentDateInTimezone;
+        console.log(` MIDNIGHT TRANSITION DETECTED for ad ${schedule.adId} (timezone: ${schedule.timezone}):`, {
+            currentMinutes,
+            currentDate: currentDateInTimezone,
+            lastExecutionDate: schedule.lastExecutionDate,
+            lastAction: schedule.lastAction,
+            dateChanged,
+            UTC_time: new Date().toISOString()
+        });
+        if (dateChanged) {
+            console.log(`🔄 DATE CHANGED at midnight! New day detected: ${currentDateInTimezone}`);
+        }
+    }
     
     console.log(`🔍 Checking schedule for ad ${schedule.adId} (timezone: ${schedule.timezone}):`, {
         scheduleType: schedule.scheduleType,
@@ -268,6 +311,15 @@ function checkIfScheduleShouldExecute(schedule: ScheduleData, now: Date): { shou
                     // Après ACTIVE_2, on attend normalement STOP_1 le jour suivant
                     // MAIS vérifier d'abord si on est dans la fenêtre de STOP_1 aujourd'hui
                     // Cela peut arriver si STOP_1 a été sauté au début de la journée
+                    // OU si c'est un nouveau jour (la date a changé)
+                    if (schedule.lastExecutionDate !== currentDateInTimezone) {
+                        console.log(`🔄 Day changed! lastExecutionDate=${schedule.lastExecutionDate}, currentDate=${currentDateInTimezone} - Cycle resets, checking for STOP_1`);
+                        // C'est un nouveau jour, vérifier si on est à l'heure de STOP_1
+                        if (isTimeMatch(currentMinutes, schedule.stopMinutes1!)) {
+                            console.log(`🔴 Time for STOP_1 (new day cycle start) at ${currentMinutes}`);
+                            return { shouldExecute: true, action: 'STOP_1' };
+                        }
+                    }
                     const isStop1Time = isTimeMatch(currentMinutes, schedule.stopMinutes1!);
                     console.log(`🔍 Checking STOP_1 recovery: currentMinutes=${currentMinutes}, stopMinutes1=${schedule.stopMinutes1}, isTimeMatch=${isStop1Time}`);
                     if (isStop1Time) {
@@ -297,6 +349,8 @@ function checkIfScheduleShouldExecute(schedule: ScheduleData, now: Date): { shou
             } else if (schedule.lastExecutionDate !== currentDateInTimezone || !schedule.lastAction) {
                 // Nouveau jour ou première exécution - vérifier quelle action doit être exécutée
                 // L'ordre logique est: STOP_1 → ACTIVE_1 → STOP_2 → ACTIVE_2
+                console.log(`🔄 NEW DAY DETECTED for ad ${schedule.adId}: lastExecutionDate=${schedule.lastExecutionDate}, currentDate=${currentDateInTimezone}, lastAction=${schedule.lastAction}`);
+                console.log(`🔄 Resetting cycle - will start from STOP_1`);
                 
                 // Si on est dans la fenêtre pour STOP_1, exécuter STOP_1
                 if (isTimeMatch(currentMinutes, schedule.stopMinutes1!)) {
@@ -363,19 +417,45 @@ function checkIfScheduleShouldExecute(schedule: ScheduleData, now: Date): { shou
                     if (isTimeMatch(currentMinutes, active1Minutes)) {
                         console.log(`🟢 Time for ACTIVE_1 at ${currentMinutes} (target: ${active1Minutes})`);
                         return { shouldExecute: true, action: 'ACTIVE_1' };
+                    } else if (currentMinutes >= active1Minutes) {
+                        // Si on a dépassé l'heure d'ACTIVE_1, l'exécuter quand même (rattrapage)
+                        console.log(`🟢 Executing ACTIVE_1 (catch-up) at ${currentMinutes} (target was: ${active1Minutes})`);
+                        return { shouldExecute: true, action: 'ACTIVE_1' };
                     } else {
                         // On attend ACTIVE_1, mais ce n'est pas encore l'heure
                         const nextActionTime = `${Math.floor(active1Minutes / 60)}:${(active1Minutes % 60).toString().padStart(2, '0')}`;
                         console.log(`⏳ Waiting for ACTIVE_1 at ${nextActionTime} (current: ${currentMinutes}, target: ${active1Minutes})`);
                     }
                 } else if (schedule.lastAction === 'ACTIVE_1') {
-                    // On a exécuté ACTIVE_1 aujourd'hui, on attend STOP_1 le jour suivant
-                    console.log(`⏳ Already executed ACTIVE_1 today, waiting for STOP_1 tomorrow at 00:00`);
+                    // On a exécuté ACTIVE_1 aujourd'hui, normalement on attend STOP_1 le jour suivant
+                    // MAIS vérifier d'abord si c'est un nouveau jour (la date a changé)
+                    // OU si on est dans la fenêtre de STOP_1 aujourd'hui
+                    if (schedule.lastExecutionDate !== currentDateInTimezone) {
+                        console.log(`🔄 Day changed! lastExecutionDate=${schedule.lastExecutionDate}, currentDate=${currentDateInTimezone} - Cycle resets, checking for STOP_1`);
+                        // C'est un nouveau jour, vérifier si on est à l'heure de STOP_1
+                        if (isTimeMatch(currentMinutes, stop1Minutes)) {
+                            console.log(`🔴 Time for STOP_1 (new day cycle start) at ${currentMinutes}`);
+                            return { shouldExecute: true, action: 'STOP_1' };
+                        }
+                    }
+                    const isStop1Time = isTimeMatch(currentMinutes, stop1Minutes);
+                    console.log(`🔍 Checking STOP_1 recovery (2-actions): currentMinutes=${currentMinutes}, stop1Minutes=${stop1Minutes}, isTimeMatch=${isStop1Time}`);
+                    if (isStop1Time) {
+                        // On est exactement à l'heure de STOP_1, l'exécuter même si ACTIVE_1 a déjà été exécuté
+                        // Cela signifie qu'on a peut-être sauté STOP_1 au début de la journée
+                        console.log(`🔴 Executing STOP_1 (recovery) at ${currentMinutes} - missed at start of day`);
+                        return { shouldExecute: true, action: 'STOP_1' };
+                    }
+                    // Sinon, attendre STOP_1 le jour suivant
+                    const nextActionTime = `${Math.floor(stop1Minutes / 60)}:${(stop1Minutes % 60).toString().padStart(2, '0')}`;
+                    console.log(`⏳ Already executed ACTIVE_1 today, waiting for STOP_1 tomorrow at ${nextActionTime} (current: ${currentMinutes})`);
                 }
             } else {
                 // Nouveau jour ou première exécution - déterminer quelle action doit être exécutée
                 // Logique : si on est entre STOP_1 et ACTIVE_1, on attend ACTIVE_1
                 // Si on est après ACTIVE_1, on attend STOP_1 le jour suivant
+                console.log(`🔄 NEW DAY DETECTED (2-actions) for ad ${schedule.adId}: lastExecutionDate=${schedule.lastExecutionDate}, currentDate=${currentDateInTimezone}, lastAction=${schedule.lastAction}`);
+                console.log(`🔄 Resetting cycle - will start from STOP_1`);
                 
                 // Vérifier si on est dans la fenêtre pour STOP_1
                 if (isTimeMatch(currentMinutes, stop1Minutes)) {
@@ -388,15 +468,28 @@ function checkIfScheduleShouldExecute(schedule: ScheduleData, now: Date): { shou
                     return { shouldExecute: true, action: 'ACTIVE_1' };
                 }
                 // Si on est entre STOP_1 et ACTIVE_1, on attend ACTIVE_1
+                // Note: pour minuit (stop1Minutes = 0), cette condition peut être problématique
+                // car currentMinutes > 0 sera toujours vrai après minuit
+                // Mais on a déjà vérifié isTimeMatch ci-dessus, donc si on arrive ici,
+                // c'est qu'on n'est pas dans la fenêtre de STOP_1
                 else if (currentMinutes > stop1Minutes && currentMinutes < active1Minutes) {
                     const nextActionTime = `${Math.floor(active1Minutes / 60)}:${(active1Minutes % 60).toString().padStart(2, '0')}`;
                     console.log(`⏳ Between STOP_1 and ACTIVE_1, waiting for ACTIVE_1 at ${nextActionTime} (current: ${currentMinutes})`);
                 }
                 // Si on est après ACTIVE_1, on attend STOP_1 le jour suivant
+                // MAIS vérifier d'abord si on est encore dans la fenêtre de STOP_1 (pour le cas où STOP_1 = 0)
                 else if (currentMinutes > active1Minutes) {
-                    console.log(`⏳ After ACTIVE_1 today, waiting for STOP_1 tomorrow at 00:00 (current: ${currentMinutes})`);
+                    // Si STOP_1 est à minuit (0), vérifier si on est encore dans la fenêtre de récupération
+                    if (stop1Minutes === 0 && currentMinutes < 5) {
+                        // On est dans la fenêtre de récupération pour minuit (00:00-00:05)
+                        console.log(`🔴 Executing STOP_1 (recovery after ACTIVE_1) at ${currentMinutes} - still in midnight window`);
+                        return { shouldExecute: true, action: 'STOP_1' };
+                    }
+                    console.log(`⏳ After ACTIVE_1 today, waiting for STOP_1 tomorrow at ${Math.floor(stop1Minutes / 60)}:${(stop1Minutes % 60).toString().padStart(2, '0')} (current: ${currentMinutes})`);
                 }
                 // Si on est avant STOP_1, on attend STOP_1
+                // Note: pour minuit (stop1Minutes = 0), cette condition ne sera jamais vraie
+                // car currentMinutes ne peut pas être < 0
                 else {
                     const nextActionTime = `${Math.floor(stop1Minutes / 60)}:${(stop1Minutes % 60).toString().padStart(2, '0')}`;
                     console.log(`⏳ Before STOP_1, waiting for STOP_1 at ${nextActionTime} (current: ${currentMinutes})`);
