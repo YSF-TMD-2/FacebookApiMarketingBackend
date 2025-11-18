@@ -1,7 +1,7 @@
 import { Router } from "express";
 import protect from "../middleware/authMiddleware.js";
 import { createSchedule, testExecuteSchedules, createTestSchedule, createTestTimeRangeSchedule, debugSchedules, createImmediateTestSchedule, forceExecuteSchedule, getScheduleAnalytics, getAdSchedules, deleteAdSchedules, getAllScheduledAds, deleteSchedule, getCalendarSchedule, createCalendarSchedule, updateCalendarSchedule, deleteCalendarScheduleDate, deleteCalendarSchedule } from "../controllers/scheduleController.js";
-import { getCalendarScheduleHistory, deleteCalendarScheduleHistory } from "../controllers/calendarScheduleController.js";
+import { getCalendarScheduleHistory, deleteCalendarScheduleHistory, getAllCalendarSchedules } from "../controllers/calendarScheduleController.js";
 import { Request, Response } from "../types/express.js";
 
 const router = Router();
@@ -12,6 +12,7 @@ router.post("/ad/:adId", protect, createSchedule);
 // Routes pour Calendar Schedules (optimisées pour grandes quantités d'ads)
 // IMPORTANT: Ces routes doivent être déclarées AVANT les routes génériques pour éviter les conflits
 router.get("/calendar/:adId", protect, getCalendarSchedule);
+router.get("/calendar/:adId/all", protect, getAllCalendarSchedules);
 router.get("/calendar/:adId/history", protect, getCalendarScheduleHistory);
 router.delete("/calendar/:adId/history", protect, deleteCalendarScheduleHistory);
 router.post("/calendar/:adId", protect, createCalendarSchedule);

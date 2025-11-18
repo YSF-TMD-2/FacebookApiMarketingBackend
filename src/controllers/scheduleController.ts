@@ -351,8 +351,14 @@ function checkIfScheduleShouldExecute(schedule: ScheduleData, now: Date): { shou
                     if (schedule.lastExecutionDate !== currentDateInTimezone) {
                         console.log(`🔄 Day changed! lastExecutionDate=${schedule.lastExecutionDate}, currentDate=${currentDateInTimezone} - Cycle resets, checking for STOP_1`);
                         // C'est un nouveau jour, vérifier si on est à l'heure de STOP_1
+                        // Pour minuit (stopMinutes1 = 0), accepter une fenêtre plus large (0-5 minutes)
                         if (isTimeMatch(currentMinutes, schedule.stopMinutes1!)) {
                             console.log(`🔴 Time for STOP_1 (new day cycle start) at ${currentMinutes}`);
+                            return { shouldExecute: true, action: 'STOP_1' };
+                        }
+                        // Si STOP_1 est à minuit et qu'on est dans les premières minutes du nouveau jour, exécuter quand même
+                        if (schedule.stopMinutes1 === 0 && currentMinutes < 5) {
+                            console.log(`🔴 Executing STOP_1 at midnight (new day detected, currentMinutes=${currentMinutes})`);
                             return { shouldExecute: true, action: 'STOP_1' };
                         }
                     }
@@ -393,9 +399,19 @@ function checkIfScheduleShouldExecute(schedule: ScheduleData, now: Date): { shou
                     console.log(`🔴 Time for STOP_1 (new day/first execution) at ${currentMinutes} (target: ${schedule.stopMinutes1})`);
                     return { shouldExecute: true, action: 'STOP_1' };
                 }
+                // Si STOP_1 est à minuit (0) et qu'on est dans les premières minutes du nouveau jour, exécuter quand même
+                if (schedule.stopMinutes1 === 0 && currentMinutes < 5) {
+                    console.log(`🔴 Executing STOP_1 at midnight (new day/first execution, currentMinutes=${currentMinutes})`);
+                    return { shouldExecute: true, action: 'STOP_1' };
+                }
                 // Si on est dans la fenêtre pour ACTIVE_1, exécuter ACTIVE_1
                 else if (isTimeMatch(currentMinutes, schedule.startMinutes!)) {
                     console.log(`🟢 Time for ACTIVE_1 (new day/first execution) at ${currentMinutes} (target: ${schedule.startMinutes})`);
+                    return { shouldExecute: true, action: 'ACTIVE_1' };
+                }
+                // Si ACTIVE_1 est à minuit (0) et qu'on est dans les premières minutes du nouveau jour, exécuter quand même
+                else if (schedule.startMinutes === 0 && currentMinutes < 5) {
+                    console.log(`🟢 Executing ACTIVE_1 at midnight (new day/first execution, currentMinutes=${currentMinutes})`);
                     return { shouldExecute: true, action: 'ACTIVE_1' };
                 }
                 // Si on est dans la fenêtre pour STOP_2, exécuter STOP_2
@@ -473,6 +489,11 @@ function checkIfScheduleShouldExecute(schedule: ScheduleData, now: Date): { shou
                             console.log(`🔴 Time for STOP_1 (new day cycle start) at ${currentMinutes}`);
                             return { shouldExecute: true, action: 'STOP_1' };
                         }
+                        // Si STOP_1 est à minuit et qu'on est dans les premières minutes du nouveau jour, exécuter quand même
+                        if (stop1Minutes === 0 && currentMinutes < 5) {
+                            console.log(`🔴 Executing STOP_1 at midnight (new day detected, currentMinutes=${currentMinutes})`);
+                            return { shouldExecute: true, action: 'STOP_1' };
+                        }
                     }
                     const isStop1Time = isTimeMatch(currentMinutes, stop1Minutes);
                     console.log(`🔍 Checking STOP_1 recovery (2-actions): currentMinutes=${currentMinutes}, stop1Minutes=${stop1Minutes}, isTimeMatch=${isStop1Time}`);
@@ -498,9 +519,19 @@ function checkIfScheduleShouldExecute(schedule: ScheduleData, now: Date): { shou
                     console.log(`🔴 Time for STOP_1 (new day/first execution) at ${currentMinutes} (target: ${stop1Minutes})`);
                     return { shouldExecute: true, action: 'STOP_1' };
                 }
+                // Si STOP_1 est à minuit (0) et qu'on est dans les premières minutes du nouveau jour, exécuter quand même
+                if (stop1Minutes === 0 && currentMinutes < 5) {
+                    console.log(`🔴 Executing STOP_1 at midnight (new day/first execution, currentMinutes=${currentMinutes})`);
+                    return { shouldExecute: true, action: 'STOP_1' };
+                }
                 // Vérifier si on est dans la fenêtre pour ACTIVE_1
                 else if (isTimeMatch(currentMinutes, active1Minutes)) {
                     console.log(`🟢 Time for ACTIVE_1 (new day/first execution) at ${currentMinutes} (target: ${active1Minutes})`);
+                    return { shouldExecute: true, action: 'ACTIVE_1' };
+                }
+                // Si ACTIVE_1 est à minuit (0) et qu'on est dans les premières minutes du nouveau jour, exécuter quand même
+                else if (active1Minutes === 0 && currentMinutes < 5) {
+                    console.log(`🟢 Executing ACTIVE_1 at midnight (new day/first execution, currentMinutes=${currentMinutes})`);
                     return { shouldExecute: true, action: 'ACTIVE_1' };
                 }
                 // Si on est entre STOP_1 et ACTIVE_1, on attend ACTIVE_1
@@ -887,16 +918,32 @@ export async function executeSchedules() {
         const currentDate = new Date().toISOString().split('T')[0];
         const { data: activeCalendarSchedules, error: calendarError } = await supabase
             .from('calendar_schedules')
-            .select('*')
+            .select('user_id, ad_id')
             .or(`first_date.is.null,first_date.lte.${currentDate},last_date.gte.${currentDate}`)
             .limit(1000); // Limite pour éviter de surcharger
         
-        if (calendarError && calendarError.code !== 'PGRST116') {
+        // Créer un Set des adIds qui ont des calendar schedules actifs (pour bloquer les schedules récurrents)
+        const adsWithCalendarSchedules = new Set<string>();
+        if (activeCalendarSchedules && activeCalendarSchedules.length > 0) {
+            for (const calendarSchedule of activeCalendarSchedules) {
+                const key = `${calendarSchedule.user_id}:${calendarSchedule.ad_id}`;
+                adsWithCalendarSchedules.add(key);
+            }
+            console.log(`📅 Found ${activeCalendarSchedules.length} active calendar schedule(s) - blocking recurring schedules for ${adsWithCalendarSchedules.size} ad(s)`);
+            
+            // Recharger les calendar schedules complets pour l'exécution
+            const { data: fullCalendarSchedules } = await supabase
+                .from('calendar_schedules')
+                .select('*')
+                .or(`first_date.is.null,first_date.lte.${currentDate},last_date.gte.${currentDate}`)
+                .limit(1000);
+            
+            if (fullCalendarSchedules && fullCalendarSchedules.length > 0) {
+                // Traiter les calendar schedules séparément (optimisé)
+                await executeCalendarSchedules(fullCalendarSchedules, now);
+            }
+        } else if (calendarError && calendarError.code !== 'PGRST116') {
             console.error('⚠️ Error loading calendar schedules:', calendarError);
-        } else if (activeCalendarSchedules && activeCalendarSchedules.length > 0) {
-            console.log(`📅 Found ${activeCalendarSchedules.length} active calendar schedule(s) to check`);
-            // Traiter les calendar schedules séparément (optimisé)
-            await executeCalendarSchedules(activeCalendarSchedules, now);
         }
         
         // Compter le nombre total de schedules
@@ -912,6 +959,15 @@ export async function executeSchedules() {
         for (const [userId, userSchedules] of schedules.entries()) {
             
             for (const schedule of userSchedules) {
+                // Ignorer les schedules récurrents si un calendar schedule existe pour cette ad
+                if (schedule.scheduleType === 'RECURRING_DAILY') {
+                    const calendarKey = `${userId}:${schedule.adId}`;
+                    if (adsWithCalendarSchedules.has(calendarKey)) {
+                        console.log(`⏭️ Skipping recurring schedule for ad ${schedule.adId} - calendar schedule is active`);
+                        continue; // Ignorer ce schedule récurrent
+                    }
+                }
+                
                 // Vérifier si le schedule doit être exécuté maintenant
                 const checkResult = checkIfScheduleShouldExecute(schedule, now);
                 
@@ -2318,6 +2374,37 @@ export async function getAllScheduledAds(req: Request, res: Response) {
 }
 
 // Fonction pour supprimer les schedules d'une ad
+// Fonction helper pour supprimer les schedules récurrents d'une ad (utilisée par calendarScheduleController)
+export async function disableRecurringScheduleForAd(userId: string, adId: string): Promise<void> {
+    try {
+        // Supprimer de la base de données
+        const { error: dbError } = await supabase
+            .from('schedules')
+            .delete()
+            .eq('user_id', userId)
+            .eq('ad_id', adId)
+            .eq('schedule_type', 'RECURRING_DAILY');
+        
+        if (dbError) {
+            console.error('⚠️ Error deleting recurring schedule from DB:', dbError);
+        } else {
+            console.log('✅ Recurring schedule deleted from database');
+        }
+        
+        // Supprimer de la mémoire
+        const userSchedules = schedules.get(userId) || [];
+        const filteredSchedules = userSchedules.filter(s => 
+            !(s.adId === adId && s.scheduleType === 'RECURRING_DAILY')
+        );
+        schedules.set(userId, filteredSchedules);
+        
+        console.log(`✅ Recurring schedule disabled for ad ${adId} (removed from memory)`);
+    } catch (error) {
+        console.error('⚠️ Error disabling recurring schedule:', error);
+        throw error;
+    }
+}
+
 export async function deleteAdSchedules(req: Request, res: Response) {
     try {
         const userId = req.user!.id;

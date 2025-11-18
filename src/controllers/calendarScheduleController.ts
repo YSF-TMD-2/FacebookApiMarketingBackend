@@ -7,7 +7,7 @@ import { Request, Response } from "../types/express.js";
 import { supabase } from "../supabaseClient.js";
 import { getFacebookToken } from "./facebookController.js";
 import { createLog } from "../services/loggerService.js";
-import { CalendarScheduleData, TimeSlot, DaySchedule, getCurrentDateInTimezone, getCurrentMinutesInTimezone, isTimeMatch } from "./scheduleController.js";
+import { CalendarScheduleData, TimeSlot, DaySchedule, getCurrentDateInTimezone, getCurrentMinutesInTimezone, isTimeMatch, disableRecurringScheduleForAd } from "./scheduleController.js";
 
 // Cache pour les schedules calendrier (optimisation pour requêtes fréquentes)
 const calendarSchedulesCache: Map<string, CalendarScheduleData> = new Map();
@@ -126,6 +126,142 @@ export async function getCalendarSchedule(req: Request, res: Response) {
     }
 }
 
+// GET /api/schedules/calendar/:adId/all - Récupérer tous les schedules configurés avec leur état
+export async function getAllCalendarSchedules(req: Request, res: Response) {
+    try {
+        const userId = req.user!.id;
+        const { adId } = req.params;
+        
+        console.log(`📅 Getting all calendar schedules for ad ${adId}`);
+        
+        // Charger le schedule depuis la DB
+        const { data, error } = await supabase
+            .from('calendar_schedules')
+            .select('*')
+            .eq('user_id', userId)
+            .eq('ad_id', adId)
+            .single();
+        
+        if (error) {
+            if (error.code === 'PGRST116') {
+                return res.json({
+                    success: true,
+                    data: [],
+                    message: "No calendar schedules found for this ad"
+                });
+            }
+            console.error('❌ Error loading calendar schedules from DB:', error);
+            return res.status(500).json({
+                success: false,
+                message: error.message || "Error loading calendar schedules"
+            });
+        }
+        
+        if (!data || !data.schedule_data) {
+            return res.json({
+                success: true,
+                data: [],
+                message: "No schedules configured"
+            });
+        }
+        
+        const scheduleData = data.schedule_data as { [date: string]: DaySchedule };
+        const timezone = data.timezone || 'UTC';
+        const now = new Date();
+        const today = getCurrentDateInTimezone(timezone);
+        
+        // Convertir toutes les dates en format lisible avec leur état
+        const allSchedules = Object.entries(scheduleData).map(([date, daySchedule]) => {
+            const scheduleDate = new Date(date + 'T00:00:00');
+            const isPast = scheduleDate < new Date(today + 'T00:00:00');
+            const isToday = date === today;
+            
+            // Déterminer l'état de chaque slot
+            const slotsWithStatus = daySchedule.timeSlots.map(slot => {
+                const currentMinutes = getCurrentMinutesInTimezone(timezone);
+                let status: 'completed' | 'active' | 'upcoming' | 'past' = 'past';
+                
+                if (isToday) {
+                    // Si c'est aujourd'hui, vérifier l'état du slot
+                    if (currentMinutes >= slot.startMinutes && currentMinutes < slot.stopMinutes) {
+                        status = 'active';
+                    } else if (currentMinutes >= slot.stopMinutes) {
+                        status = 'completed';
+                    } else {
+                        status = 'upcoming';
+                    }
+                } else if (isPast) {
+                    status = 'completed';
+                } else {
+                    status = 'upcoming';
+                }
+                
+                return {
+                    ...slot,
+                    status,
+                    startTime: formatMinutesToTime(slot.startMinutes),
+                    stopTime: formatMinutesToTime(slot.stopMinutes)
+                };
+            });
+            
+            return {
+                date,
+                dateFormatted: formatDate(date),
+                isPast,
+                isToday,
+                timezone,
+                timeSlots: slotsWithStatus,
+                totalSlots: daySchedule.timeSlots.length
+            };
+        });
+        
+        // Trier par date (plus récent en premier)
+        allSchedules.sort((a, b) => {
+            const dateA = new Date(a.date + 'T00:00:00');
+            const dateB = new Date(b.date + 'T00:00:00');
+            return dateB.getTime() - dateA.getTime();
+        });
+        
+        return res.json({
+            success: true,
+            data: {
+                schedules: allSchedules,
+                total: allSchedules.length,
+                pastCount: allSchedules.filter(s => s.isPast).length,
+                upcomingCount: allSchedules.filter(s => !s.isPast).length,
+                timezone
+            }
+        });
+        
+    } catch (error: any) {
+        console.error('❌ Error getting all calendar schedules:', error);
+        return res.status(500).json({
+            success: false,
+            message: error.message || "Error getting all calendar schedules"
+        });
+    }
+}
+
+// Fonction helper pour formater les minutes en heure
+function formatMinutesToTime(minutes: number): string {
+    const hours = Math.floor(minutes / 60);
+    const mins = minutes % 60;
+    const period = hours >= 12 ? 'PM' : 'AM';
+    const displayHours = hours % 12 || 12;
+    return `${displayHours}:${mins.toString().padStart(2, '0')} ${period}`;
+}
+
+// Fonction helper pour formater la date
+function formatDate(dateString: string): string {
+    const date = new Date(dateString + 'T00:00:00');
+    return date.toLocaleDateString('en-US', { 
+        weekday: 'short', 
+        day: 'numeric', 
+        month: 'short', 
+        year: 'numeric' 
+    });
+}
+
 // POST /api/schedules/calendar/:adId - Créer un schedule calendrier (optimisé avec UPSERT)
 export async function createCalendarSchedule(req: Request, res: Response) {
     try {
@@ -201,24 +337,14 @@ export async function createCalendarSchedule(req: Request, res: Response) {
         
         // Désactiver le schedule récurrent si présent (le schedule calendrier prend la priorité)
         try {
-            const { error: deleteError } = await supabase
-                .from('schedules')
-                .delete()
-                .eq('user_id', userId)
-                .eq('ad_id', adId)
-                .eq('schedule_type', 'RECURRING_DAILY');
-            
-            if (deleteError) {
-                console.error('⚠️ Error deleting recurring schedule:', deleteError);
-            } else {
-                console.log('✅ Recurring schedule disabled for calendar schedule');
-                await createLog(userId, "RECURRING_SCHEDULE_DISABLED", {
-                    adId,
-                    reason: "Calendar schedule created"
-                });
-            }
+            await disableRecurringScheduleForAd(userId, adId);
+            await createLog(userId, "RECURRING_SCHEDULE_DISABLED", {
+                adId,
+                reason: "Calendar schedule created"
+            });
         } catch (deleteError) {
             console.error('⚠️ Error disabling recurring schedule:', deleteError);
+            // Ne pas faire échouer l'opération principale si la désactivation échoue
         }
         
         // Utiliser UPSERT pour éviter les conflits (optimisé)
@@ -301,6 +427,18 @@ export async function updateCalendarSchedule(req: Request, res: Response) {
                 success: false,
                 message: "Calendar schedule not found. Use POST to create one."
             });
+        }
+        
+        // Désactiver le schedule récurrent si présent (le schedule calendrier prend la priorité)
+        try {
+            await disableRecurringScheduleForAd(userId, adId);
+            await createLog(userId, "RECURRING_SCHEDULE_DISABLED", {
+                adId,
+                reason: "Calendar schedule updated"
+            });
+        } catch (deleteError) {
+            console.error('⚠️ Error disabling recurring schedule:', deleteError);
+            // Ne pas faire échouer l'opération principale si la désactivation échoue
         }
         
         // Merger les nouveaux schedules avec les existants
