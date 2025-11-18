@@ -3,10 +3,13 @@ import { getFacebookToken, fetchFbGraph } from "./facebookController.js";
 import { createLog } from "../services/loggerService.js";
 import { supabase } from "../supabaseClient.js";
 
+// Exporter les interfaces pour utilisation dans calendarScheduleController
+export type { CalendarScheduleData, TimeSlot, DaySchedule };
+
 // Interface pour les données de schedule
 interface ScheduleData {
     adId: string;
-    scheduleType: 'START' | 'STOP' | 'PAUSE' | 'RECURRING_DAILY';
+    scheduleType: 'START' | 'STOP' | 'PAUSE' | 'RECURRING_DAILY' | 'CALENDAR_SCHEDULE';
     scheduledDate: string;
     timezone: string;
     startMinutes?: number;
@@ -19,8 +22,41 @@ interface ScheduleData {
     lastExecutionDate?: string; // Date de la dernière exécution (pour recurring daily)
 }
 
+// Interface pour les créneaux horaires dans un schedule calendrier
+interface TimeSlot {
+    id: string;              // UUID pour identification unique
+    startMinutes: number;    // Heure d'activation (0-1439)
+    stopMinutes: number;     // Heure d'arrêt (0-1439)
+    enabled?: boolean;       // Permet de désactiver temporairement (défaut: true)
+}
+
+// Interface pour le schedule d'un jour spécifique
+interface DaySchedule {
+    timeSlots: TimeSlot[];
+}
+
+// Interface pour les données de schedule calendrier
+interface CalendarScheduleData {
+    adId: string;
+    scheduleType: 'CALENDAR_SCHEDULE';
+    timezone: string;
+    schedules: {
+        [date: string]: DaySchedule;  // Format: "YYYY-MM-DD"
+    };
+    lastExecutedDate?: string;        // Format: "YYYY-MM-DD"
+    lastExecutedSlotId?: string;      // ID du dernier slot exécuté
+    lastExecutedAction?: string;       // 'ACTIVE' ou 'STOP'
+    createdAt?: string;
+    updatedAt?: string;
+}
+
 // Stockage temporaire des schedules (cache en mémoire pour performance, mais persistant en DB)
 const schedules: Map<string, ScheduleData[]> = new Map();
+
+// Cache pour les schedules calendrier (optimisation pour requêtes fréquentes)
+const calendarSchedulesCache: Map<string, CalendarScheduleData> = new Map();
+const CALENDAR_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+const calendarCacheTimestamps: Map<string, number> = new Map();
 
 // Fonction helper pour convertir ScheduleData vers format DB
 function scheduleDataToDb(schedule: ScheduleData, userId: string): any {
@@ -103,8 +139,8 @@ export async function loadSchedulesFromDB() {
     }
 }
 
-// Fonction helper pour obtenir l'heure actuelle dans un timezone spécifique (en minutes depuis minuit)
-function getCurrentMinutesInTimezone(timezone: string): number {
+// Exporter les fonctions helper pour utilisation dans calendarScheduleController
+export function getCurrentMinutesInTimezone(timezone: string): number {
     try {
         // Créer une date formatter pour le timezone spécifié
         const now = new Date();
@@ -135,8 +171,8 @@ function getCurrentMinutesInTimezone(timezone: string): number {
     }
 }
 
-// Fonction helper pour obtenir la date actuelle dans un timezone spécifique (format: YYYY-MM-DD)
-function getCurrentDateInTimezone(timezone: string): string {
+// Exporter les fonctions helper pour utilisation dans calendarScheduleController
+export function getCurrentDateInTimezone(timezone: string): string {
     try {
         const now = new Date();
         const formatter = new Intl.DateTimeFormat('en-CA', { // 'en-CA' donne le format YYYY-MM-DD
@@ -174,8 +210,8 @@ function getCurrentDateInTimezone(timezone: string): string {
     }
 }
 
-// Fonction helper pour vérifier si l'heure actuelle correspond à une heure cible (avec fenêtre de 5 minutes pour plus de sécurité)
-function isTimeMatch(currentMinutes: number, targetMinutes: number, windowMinutes: number = 5): boolean {
+// Exporter les fonctions helper pour utilisation dans calendarScheduleController
+export function isTimeMatch(currentMinutes: number, targetMinutes: number, windowMinutes: number = 5): boolean {
     // Normaliser les minutes (0-1439)
     const normalizedCurrent = currentMinutes % 1440;
     const normalizedTarget = targetMinutes % 1440;
@@ -824,7 +860,16 @@ export async function createSchedule(req: Request, res: Response) {
 
 
 
-// Exécuter les schedules (à appeler périodiquement)
+// Exporter les fonctions calendar schedule pour les routes
+export { 
+    getCalendarSchedule, 
+    createCalendarSchedule, 
+    updateCalendarSchedule, 
+    deleteCalendarScheduleDate, 
+    deleteCalendarSchedule 
+} from "./calendarScheduleController.js";
+
+// Exécuter les schedules (à appeler périodiquement) - Optimisé pour grandes quantités d'ads
 export async function executeSchedules() {
     try {
         const now = new Date();
@@ -835,6 +880,23 @@ export async function executeSchedules() {
         if (schedules.size === 0) {
             console.log('⚠️ No schedules in memory, loading from database...');
             await loadSchedulesFromDB();
+        }
+        
+        // Charger les calendar schedules actifs depuis la DB (optimisé avec index partiel)
+        // Seulement les schedules avec dates aujourd'hui ou futures (index idx_calendar_schedules_execution)
+        const currentDate = new Date().toISOString().split('T')[0];
+        const { data: activeCalendarSchedules, error: calendarError } = await supabase
+            .from('calendar_schedules')
+            .select('*')
+            .or(`first_date.is.null,first_date.lte.${currentDate},last_date.gte.${currentDate}`)
+            .limit(1000); // Limite pour éviter de surcharger
+        
+        if (calendarError && calendarError.code !== 'PGRST116') {
+            console.error('⚠️ Error loading calendar schedules:', calendarError);
+        } else if (activeCalendarSchedules && activeCalendarSchedules.length > 0) {
+            console.log(`📅 Found ${activeCalendarSchedules.length} active calendar schedule(s) to check`);
+            // Traiter les calendar schedules séparément (optimisé)
+            await executeCalendarSchedules(activeCalendarSchedules, now);
         }
         
         // Compter le nombre total de schedules
@@ -1139,6 +1201,385 @@ export async function executeSchedules() {
         
     } catch (error) {
         console.error('❌ Error in executeSchedules:', error);
+    }
+}
+
+// Fonction pour exécuter les calendar schedules (optimisée pour grandes quantités d'ads)
+// Fonction pour vérifier si une exécution similaire existe déjà dans l'historique récent
+async function checkRecentExecution(
+    userId: string,
+    adId: string,
+    scheduleDate: string,
+    slotId: string,
+    action: 'ACTIVE' | 'STOP',
+    withinMinutes: number = 5
+): Promise<boolean> {
+    try {
+        const cutoffTime = new Date();
+        cutoffTime.setMinutes(cutoffTime.getMinutes() - withinMinutes);
+        
+        const { data, error } = await supabase
+            .from('calendar_schedule_history')
+            .select('id')
+            .eq('user_id', userId)
+            .eq('ad_id', adId)
+            .eq('schedule_date', scheduleDate)
+            .eq('slot_id', slotId)
+            .eq('action', action)
+            .gte('execution_time', cutoffTime.toISOString())
+            .limit(1);
+        
+        if (error) {
+            console.error('❌ Error checking recent execution:', error);
+            return false; // En cas d'erreur, permettre l'exécution pour éviter de bloquer
+        }
+        
+        return (data && data.length > 0);
+    } catch (err: any) {
+        console.error('❌ Exception checking recent execution:', err);
+        return false; // En cas d'erreur, permettre l'exécution
+    }
+}
+
+// Fonction pour enregistrer l'exécution dans l'historique
+async function logCalendarScheduleExecution(
+    userId: string,
+    adId: string,
+    scheduleDate: string,
+    slotId: string,
+    startMinutes: number,
+    stopMinutes: number,
+    action: 'ACTIVE' | 'STOP',
+    status: 'SUCCESS' | 'ERROR' | 'PENDING',
+    executionTime: Date,
+    timezone: string,
+    errorMessage?: string,
+    facebookApiResponse?: any
+) {
+    try {
+        // Vérifier si une exécution similaire existe déjà dans les 10 dernières minutes
+        const recentExecution = await checkRecentExecution(userId, adId, scheduleDate, slotId, action, 10);
+        if (recentExecution) {
+            console.log(`⚠️ Duplicate execution detected and skipped: ${action} for ad ${adId}, slot ${slotId} on ${scheduleDate}`);
+            return; // Ne pas enregistrer les doublons
+        }
+        
+        const { error } = await supabase
+            .from('calendar_schedule_history')
+            .insert({
+                user_id: userId,
+                ad_id: adId,
+                schedule_date: scheduleDate,
+                slot_id: slotId,
+                start_minutes: startMinutes,
+                stop_minutes: stopMinutes,
+                action: action,
+                status: status,
+                execution_time: executionTime.toISOString(),
+                timezone: timezone,
+                error_message: errorMessage || null,
+                facebook_api_response: facebookApiResponse || null
+            });
+        
+        if (error) {
+            console.error('❌ Error logging calendar schedule execution:', error);
+        } else {
+            console.log(`✅ Calendar schedule execution logged: ${action} for ad ${adId} on ${scheduleDate}`);
+        }
+    } catch (err: any) {
+        console.error('❌ Exception logging calendar schedule execution:', err);
+    }
+}
+
+async function executeCalendarSchedules(calendarSchedules: any[], now: Date) {
+    try {
+        console.log(`📅 Executing ${calendarSchedules.length} calendar schedule(s)...`);
+        
+        for (const dbSchedule of calendarSchedules) {
+            try {
+                const userId = dbSchedule.user_id;
+                const adId = dbSchedule.ad_id;
+                const timezone = dbSchedule.timezone || 'UTC';
+                
+                // Recharger le schedule depuis la DB pour avoir les dernières valeurs de last_executed_date
+                const { data: freshSchedule, error: refreshError } = await supabase
+                    .from('calendar_schedules')
+                    .select('*')
+                    .eq('user_id', userId)
+                    .eq('ad_id', adId)
+                    .single();
+                
+                if (refreshError || !freshSchedule) {
+                    console.error(`❌ Error refreshing schedule for ad ${adId}:`, refreshError);
+                    continue;
+                }
+                
+                // Obtenir la date et l'heure actuelle dans le timezone du schedule
+                const currentDateInTimezone = getCurrentDateInTimezone(timezone);
+                const currentMinutesInTimezone = getCurrentMinutesInTimezone(timezone);
+                
+                // Vérifier si ce schedule a un créneau pour aujourd'hui
+                const scheduleData = freshSchedule.schedule_data || {};
+                const daySchedule = scheduleData[currentDateInTimezone];
+                
+                if (!daySchedule || !daySchedule.timeSlots || daySchedule.timeSlots.length === 0) {
+                    continue; // Pas de schedule pour aujourd'hui
+                }
+                
+                // Vérifier chaque slot pour voir si on doit exécuter une action
+                for (const slot of daySchedule.timeSlots) {
+                    if (slot.enabled === false) continue; // Slot désactivé
+                    
+                    // Vérifier si on doit activer (fenêtre réduite à 1 minute pour éviter les doublons)
+                    if (isTimeMatch(currentMinutesInTimezone, slot.startMinutes, 1)) {
+                        // Vérifier qu'on n'a pas déjà exécuté ce slot aujourd'hui (avec données fraîches)
+                        if (freshSchedule.last_executed_date !== currentDateInTimezone || 
+                            freshSchedule.last_executed_slot_id !== slot.id ||
+                            freshSchedule.last_executed_action !== 'ACTIVE') {
+                            
+                            // Vérifier dans l'historique si une exécution similaire existe déjà récemment (fenêtre de 10 minutes)
+                            const recentExecution = await checkRecentExecution(
+                                userId, 
+                                adId, 
+                                currentDateInTimezone, 
+                                slot.id, 
+                                'ACTIVE', 
+                                10 // Dans les 10 dernières minutes pour éviter les doublons
+                            );
+                            
+                            if (recentExecution) {
+                                console.log(`⚠️ Skipping duplicate ACTIVE execution for ad ${adId}, slot ${slot.id} on ${currentDateInTimezone}`);
+                                // Mettre à jour quand même last_executed_date pour éviter de réessayer
+                                await supabase
+                                    .from('calendar_schedules')
+                                    .update({
+                                        last_executed_date: currentDateInTimezone,
+                                        last_executed_slot_id: slot.id,
+                                        last_executed_action: 'ACTIVE',
+                                        updated_at: new Date().toISOString()
+                                    })
+                                    .eq('user_id', userId)
+                                    .eq('ad_id', adId);
+                                continue; // Ignorer les doublons
+                            }
+                            
+                            console.log(`🟢 Executing ACTIVE for calendar schedule: ad ${adId}, slot ${slot.id}, time ${slot.startMinutes}`);
+                            
+                            // Récupérer le token Facebook
+                            const tokenRow = await getFacebookToken(userId);
+                            if (!tokenRow || !tokenRow.token) {
+                                console.error(`❌ No token found for user ${userId}`);
+                                continue;
+                            }
+                            
+                            // Appeler Facebook API pour activer l'ad
+                            const response = await fetch(`https://graph.facebook.com/v18.0/${adId}`, {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({
+                                    status: 'ACTIVE',
+                                    access_token: tokenRow.token
+                                })
+                            });
+                            
+                            const responseData = await response.json().catch(() => ({}));
+                            
+                            if (response.ok) {
+                                // Mettre à jour le tracking d'exécution (requête optimisée avec index)
+                                await supabase
+                                    .from('calendar_schedules')
+                                    .update({
+                                        last_executed_date: currentDateInTimezone,
+                                        last_executed_slot_id: slot.id,
+                                        last_executed_action: 'ACTIVE',
+                                        updated_at: new Date().toISOString()
+                                    })
+                                    .eq('user_id', userId)
+                                    .eq('ad_id', adId);
+                                
+                                console.log(`✅ Calendar schedule ACTIVE executed for ad ${adId}`);
+                                
+                                // Enregistrer dans l'historique
+                                await logCalendarScheduleExecution(
+                                    userId,
+                                    adId,
+                                    currentDateInTimezone,
+                                    slot.id,
+                                    slot.startMinutes,
+                                    slot.stopMinutes,
+                                    'ACTIVE',
+                                    'SUCCESS',
+                                    now,
+                                    timezone,
+                                    undefined,
+                                    responseData
+                                );
+                                
+                                // Log
+                                await createLog(userId, "CALENDAR_SCHEDULE_EXECUTE", {
+                                    adId,
+                                    action: 'ACTIVE',
+                                    slotId: slot.id,
+                                    date: currentDateInTimezone,
+                                    time: slot.startMinutes
+                                });
+                            } else {
+                                const errorData = await response.json().catch(() => ({}));
+                                const errorMessage = errorData.error?.message || JSON.stringify(errorData);
+                                console.error(`❌ Facebook API error for calendar schedule:`, errorData);
+                                
+                                // Enregistrer l'erreur dans l'historique
+                                await logCalendarScheduleExecution(
+                                    userId,
+                                    adId,
+                                    currentDateInTimezone,
+                                    slot.id,
+                                    slot.startMinutes,
+                                    slot.stopMinutes,
+                                    'ACTIVE',
+                                    'ERROR',
+                                    now,
+                                    timezone,
+                                    errorMessage,
+                                    errorData
+                                );
+                            }
+                        }
+                    }
+                    
+                    // Vérifier si on doit arrêter (fenêtre réduite à 1 minute pour éviter les doublons)
+                    if (isTimeMatch(currentMinutesInTimezone, slot.stopMinutes, 1)) {
+                        // Recharger le schedule à nouveau pour avoir les dernières valeurs avant STOP
+                        const { data: updatedSchedule } = await supabase
+                            .from('calendar_schedules')
+                            .select('*')
+                            .eq('user_id', userId)
+                            .eq('ad_id', adId)
+                            .single();
+                        
+                        const scheduleToCheck = updatedSchedule || freshSchedule;
+                        
+                        // Vérifier qu'on n'a pas déjà exécuté ce slot aujourd'hui (avec données fraîches)
+                        if (scheduleToCheck.last_executed_date !== currentDateInTimezone || 
+                            scheduleToCheck.last_executed_slot_id !== slot.id ||
+                            scheduleToCheck.last_executed_action !== 'STOP') {
+                            
+                            // Vérifier dans l'historique si une exécution similaire existe déjà récemment (fenêtre de 10 minutes)
+                            const recentExecution = await checkRecentExecution(
+                                userId, 
+                                adId, 
+                                currentDateInTimezone, 
+                                slot.id, 
+                                'STOP', 
+                                10 // Dans les 10 dernières minutes pour éviter les doublons
+                            );
+                            
+                            if (recentExecution) {
+                                console.log(`⚠️ Skipping duplicate STOP execution for ad ${adId}, slot ${slot.id} on ${currentDateInTimezone}`);
+                                // Mettre à jour quand même last_executed_date pour éviter de réessayer
+                                await supabase
+                                    .from('calendar_schedules')
+                                    .update({
+                                        last_executed_date: currentDateInTimezone,
+                                        last_executed_slot_id: slot.id,
+                                        last_executed_action: 'STOP',
+                                        updated_at: new Date().toISOString()
+                                    })
+                                    .eq('user_id', userId)
+                                    .eq('ad_id', adId);
+                                continue; // Ignorer les doublons
+                            }
+                            
+                            console.log(`🔴 Executing STOP for calendar schedule: ad ${adId}, slot ${slot.id}, time ${slot.stopMinutes}`);
+                            
+                            // Récupérer le token Facebook
+                            const tokenRow = await getFacebookToken(userId);
+                            if (!tokenRow || !tokenRow.token) {
+                                console.error(`❌ No token found for user ${userId}`);
+                                continue;
+                            }
+                            
+                            // Appeler Facebook API pour arrêter l'ad
+                            const response = await fetch(`https://graph.facebook.com/v18.0/${adId}`, {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({
+                                    status: 'PAUSED',
+                                    access_token: tokenRow.token
+                                })
+                            });
+                            
+                            const responseData = await response.json().catch(() => ({}));
+                            
+                            if (response.ok) {
+                                // Mettre à jour le tracking d'exécution (requête optimisée avec index)
+                                await supabase
+                                    .from('calendar_schedules')
+                                    .update({
+                                        last_executed_date: currentDateInTimezone,
+                                        last_executed_slot_id: slot.id,
+                                        last_executed_action: 'STOP',
+                                        updated_at: new Date().toISOString()
+                                    })
+                                    .eq('user_id', userId)
+                                    .eq('ad_id', adId);
+                                
+                                console.log(`✅ Calendar schedule STOP executed for ad ${adId}`);
+                                
+                                // Enregistrer dans l'historique
+                                await logCalendarScheduleExecution(
+                                    userId,
+                                    adId,
+                                    currentDateInTimezone,
+                                    slot.id,
+                                    slot.startMinutes,
+                                    slot.stopMinutes,
+                                    'STOP',
+                                    'SUCCESS',
+                                    now,
+                                    timezone,
+                                    undefined,
+                                    responseData
+                                );
+                                
+                                // Log
+                                await createLog(userId, "CALENDAR_SCHEDULE_EXECUTE", {
+                                    adId,
+                                    action: 'STOP',
+                                    slotId: slot.id,
+                                    date: currentDateInTimezone,
+                                    time: slot.stopMinutes
+                                });
+                            } else {
+                                const errorData = await response.json().catch(() => ({}));
+                                const errorMessage = errorData.error?.message || JSON.stringify(errorData);
+                                console.error(`❌ Facebook API error for calendar schedule:`, errorData);
+                                
+                                // Enregistrer l'erreur dans l'historique
+                                await logCalendarScheduleExecution(
+                                    userId,
+                                    adId,
+                                    currentDateInTimezone,
+                                    slot.id,
+                                    slot.startMinutes,
+                                    slot.stopMinutes,
+                                    'STOP',
+                                    'ERROR',
+                                    now,
+                                    timezone,
+                                    errorMessage,
+                                    errorData
+                                );
+                            }
+                        }
+                    }
+                }
+            } catch (error: any) {
+                console.error(`❌ Error executing calendar schedule for ad ${dbSchedule.ad_id}:`, error);
+            }
+        }
+    } catch (error) {
+        console.error('❌ Error in executeCalendarSchedules:', error);
     }
 }
 
