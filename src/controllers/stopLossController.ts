@@ -338,14 +338,14 @@ export async function monitorStopLoss() {
                     console.log(`🚨 Stop loss triggered for ad ${config.ad_id}: ${triggerReason}`);
                     
                     // Mettre en pause l'annonce
-                    const response = await fetch(`https://graph.facebook.com/v18.0/${config.ad_id}`, {
+                    // Facebook Graph API nécessite le token dans l'URL, pas dans le body
+                    const response = await fetch(`https://graph.facebook.com/v18.0/${config.ad_id}?access_token=${tokenRow.token}`, {
                         method: 'POST',
                         headers: {
                             'Content-Type': 'application/json',
                         },
                         body: JSON.stringify({
-                            status: 'PAUSED',
-                            access_token: tokenRow.token
+                            status: 'PAUSED'
                         })
                     });
 
@@ -565,14 +565,14 @@ export async function checkStopLossManually(req: Request, res: Response) {
             console.log(`🚨 Manual stop loss triggered for ad ${adId}: ${triggerReason}`);
             
             // Mettre en pause l'annonce
-            const response = await fetch(`https://graph.facebook.com/v18.0/${adId}`, {
+            // Facebook Graph API nécessite le token dans l'URL, pas dans le body
+            const response = await fetch(`https://graph.facebook.com/v18.0/${adId}?access_token=${tokenRow.token}`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
                 },
                 body: JSON.stringify({
-                    status: 'PAUSED',
-                    access_token: tokenRow.token
+                    status: 'PAUSED'
                 })
             });
 

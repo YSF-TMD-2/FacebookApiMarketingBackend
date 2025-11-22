@@ -30,6 +30,13 @@ async function createLog(userId: string, action: string, details: any) {
     }
 }
 
+// Fonction helper pour normaliser le statut d'une ad
+// Utilise uniquement le statut de l'ad elle-même, indépendamment de la campagne/adset
+function normalizeAdStatus(status: string | undefined | null): string {
+    // Seul le statut exact "ACTIVE" indique que l'ad est active
+    return status === 'ACTIVE' ? 'ACTIVE' : 'PAUSED';
+}
+
 // Fonction utilitaire pour récupérer le token Facebook
 export async function getFacebookToken(userId: string): Promise<FacebookToken> {
     console.log(`🔍 [getFacebookToken] Fetching token for userId: ${userId}`);
@@ -1000,13 +1007,13 @@ export async function updateAdStatus(req: Request, res: Response) {
         console.log(`🔑 Token retrieved for user: ${userId}`);
 
         // Mettre à jour le statut de l'annonce via l'API Facebook
+        // Facebook Graph API nécessite le token dans l'URL, pas dans les headers
         console.log(`📡 Calling Facebook API to update ad ${adId} status to ${status}`);
         const response = await axios.post(
-            `https://graph.facebook.com/v18.0/${adId}`,
+            `https://graph.facebook.com/v18.0/${adId}?access_token=${tokenRow.token}`,
             { status },
             {
                 headers: {
-                    'Authorization': `Bearer ${tokenRow.token}`,
                     'Content-Type': 'application/json'
                 }
             }
@@ -1014,12 +1021,51 @@ export async function updateAdStatus(req: Request, res: Response) {
 
         console.log(`✅ Facebook API response:`, response.data);
 
-        await createLog(userId, "AD_STATUS_UPDATED", { adId, status, response: response.data });
-        return res.json({ 
-            success: true,
-            message: "Ad status updated successfully", 
-            data: response.data 
-        });
+        // Après la mise à jour, récupérer le statut réel depuis Facebook pour confirmer
+        // Cela garantit que nous retournons le statut réel (avec effective_status)
+        try {
+            const verifyEndpoint = `${adId}?fields=id,status,effective_status`;
+            const verifyResponse = await fetchFbGraph(tokenRow.token, verifyEndpoint);
+            
+            // Normaliser le statut comme dans getAdDetails (uniquement basé sur le statut de l'ad)
+            const normalizedStatus = normalizeAdStatus(verifyResponse.status);
+            
+            console.log(`✅ Verified ad status after update:`, {
+                status_from_facebook: verifyResponse.status,
+                normalized_status: normalizedStatus
+            });
+            
+            await createLog(userId, "AD_STATUS_UPDATED", { 
+                adId, 
+                requested_status: status,
+                actual_status: verifyResponse.status,
+                effective_status: realStatus,
+                normalized_status: normalizedStatus,
+                response: response.data 
+            });
+            
+            return res.json({ 
+                success: true,
+                message: "Ad status updated successfully", 
+                data: {
+                    ...response.data,
+                    status: normalizedStatus,
+                    effective_status: realStatus
+                }
+            });
+        } catch (verifyError: any) {
+            // Si la vérification échoue, retourner quand même la réponse de Facebook
+            console.error('⚠️ Could not verify ad status after update:', verifyError);
+            await createLog(userId, "AD_STATUS_UPDATED", { adId, status, response: response.data });
+            return res.json({ 
+                success: true,
+                message: "Ad status updated successfully", 
+                data: {
+                    ...response.data,
+                    status: status // Utiliser le statut demandé si la vérification échoue
+                }
+            });
+        }
 
     } catch (error: any) {
         console.error('❌ Error updating ad status:', error);
@@ -1233,9 +1279,25 @@ export async function getAdDetails(req: Request, res: Response) {
         const tokenRow = await getFacebookToken(userId);
 
         // Récupérer les détails de base de l'ad
+        // IMPORTANT: Toujours récupérer le statut depuis Facebook (pas de cache)
+        // Le statut peut changer via le calendrier ou manuellement, donc on doit toujours avoir la version la plus récente
         const endpoint = `${adId}?fields=id,name,status,created_time,updated_time,adset_id,campaign_id,creative{id,name,title,body,call_to_action_type,image_url,video_id,thumbnail_url,link_url,object_story_spec}`;
         const adDetails = await fetchFbGraph(tokenRow.token, endpoint);
-        console.log('🔍 Ad basic details:', adDetails);
+        
+        // Utiliser uniquement le statut de l'ad elle-même (indépendant de la campagne/adset)
+        // Normaliser le statut : ACTIVE ou PAUSED
+        const normalizedStatus = normalizeAdStatus(adDetails.status);
+        
+        // Remplacer le status par le statut normalisé
+        adDetails.status = normalizedStatus;
+        
+        console.log('🔍 [getAdDetails] Status from Facebook:', {
+            id: adDetails.id,
+            name: adDetails.name,
+            status_from_facebook: adDetails.status,
+            normalized_status: normalizedStatus,
+            updated_time: adDetails.updated_time
+        });
 
         // Si la creative a un video_id, récupérer l'URL de la vidéo
         if (adDetails.creative?.video_id) {

@@ -535,12 +535,19 @@ export async function getAdDetailsForAdmin(req: ExpressRequest, res: Response) {
 
     // Récupérer les détails de base de l'ad
     console.log(`🔍 [ADMIN] Fetching ad details from Facebook Graph API for adId: ${adId}`);
-    const endpoint = `${adId}?fields=id,name,status,created_time,updated_time,adset_id,campaign_id,creative{id,name,title,body,call_to_action_type,image_url,video_id,thumbnail_url,link_url,object_story_spec}`;
+    // Récupérer aussi effective_status pour avoir le statut réel (prend en compte campagne/adset)
+    const endpoint = `${adId}?fields=id,name,status,effective_status,created_time,updated_time,adset_id,campaign_id,creative{id,name,title,body,call_to_action_type,image_url,video_id,thumbnail_url,link_url,object_story_spec}`;
     const adDetails = await fetchFbGraph(tokenRow.token, endpoint);
+    
+    // Normaliser le statut (uniquement basé sur le statut de l'ad, indépendant de campagne/adset)
+    const normalizedStatus = adDetails.status === 'ACTIVE' ? 'ACTIVE' : 'PAUSED';
+    adDetails.status = normalizedStatus;
+    
     console.log('✅ [ADMIN] Ad basic details retrieved:', {
       id: adDetails.id,
       name: adDetails.name,
-      status: adDetails.status,
+      status_from_facebook: adDetails.status,
+      normalized_status: normalizedStatus,
       hasCreative: !!adDetails.creative
     });
 

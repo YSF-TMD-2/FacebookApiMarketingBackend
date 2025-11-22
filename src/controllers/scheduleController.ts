@@ -102,23 +102,23 @@ function dbToScheduleData(dbRow: any): ScheduleData {
 // Charger tous les schedules depuis la base de données au démarrage
 export async function loadSchedulesFromDB() {
     try {
-        console.log(' Loading schedules from database...');
+        // console.log(' Loading schedules from database...');
         const { data: dbSchedules, error } = await supabase
             .from('schedules')
             .select('*');
         
         if (error) {
-            console.error(' Error loading schedules from DB:', error);
+            // console.error(' Error loading schedules from DB:', error);
             // Si la table n'existe pas encore, on continue sans erreur
             if (error.code === 'PGRST116' || error.message?.includes('does not exist')) {
-                console.log(' Schedules table does not exist yet. It will be created on first schedule creation.');
+                // console.log(' Schedules table does not exist yet. It will be created on first schedule creation.');
                 return;
             }
             throw error;
         }
         
         if (!dbSchedules || dbSchedules.length === 0) {
-            console.log(' No schedules found in database');
+            // console.log(' No schedules found in database');
             return;
         }
         
@@ -132,9 +132,9 @@ export async function loadSchedulesFromDB() {
             schedules.get(userId)!.push(dbToScheduleData(dbSchedule));
         }
         
-        console.log(` Loaded ${dbSchedules.length} schedule(s) from database for ${schedules.size} user(s)`);
+        // console.log(` Loaded ${dbSchedules.length} schedule(s) from database for ${schedules.size} user(s)`);
     } catch (error) {
-        console.error(' Error in loadSchedulesFromDB:', error);
+        // console.error(' Error in loadSchedulesFromDB:', error);
         // Ne pas bloquer le démarrage si le chargement échoue
     }
 }
@@ -922,16 +922,10 @@ export async function executeSchedules() {
             .or(`first_date.is.null,first_date.lte.${currentDate},last_date.gte.${currentDate}`)
             .limit(1000); // Limite pour éviter de surcharger
         
-        // Créer un Set des adIds qui ont des calendar schedules actifs (pour bloquer les schedules récurrents)
+        // Créer un Set des adIds qui ont des calendar schedules avec des slots actifs (pour bloquer les schedules récurrents)
         const adsWithCalendarSchedules = new Set<string>();
         if (activeCalendarSchedules && activeCalendarSchedules.length > 0) {
-            for (const calendarSchedule of activeCalendarSchedules) {
-                const key = `${calendarSchedule.user_id}:${calendarSchedule.ad_id}`;
-                adsWithCalendarSchedules.add(key);
-            }
-            console.log(`📅 Found ${activeCalendarSchedules.length} active calendar schedule(s) - blocking recurring schedules for ${adsWithCalendarSchedules.size} ad(s)`);
-            
-            // Recharger les calendar schedules complets pour l'exécution
+            // Recharger les calendar schedules complets pour l'exécution et la vérification des slots
             const { data: fullCalendarSchedules } = await supabase
                 .from('calendar_schedules')
                 .select('*')
@@ -941,6 +935,36 @@ export async function executeSchedules() {
             if (fullCalendarSchedules && fullCalendarSchedules.length > 0) {
                 // Traiter les calendar schedules séparément (optimisé)
                 await executeCalendarSchedules(fullCalendarSchedules, now);
+                
+                // Vérifier si chaque calendar schedule a vraiment des slots actifs
+                for (const calendarSchedule of fullCalendarSchedules) {
+                    const scheduleData = (calendarSchedule as any).schedule_data || {};
+                    let hasActiveSlots = false;
+                    
+                    // Vérifier si le schedule a des slots actifs (au moins un slot enabled !== false)
+                    for (const dateKey in scheduleData) {
+                        if (scheduleData.hasOwnProperty(dateKey)) {
+                            const daySchedule = scheduleData[dateKey];
+                            if (daySchedule.timeSlots && daySchedule.timeSlots.length > 0) {
+                                const activeSlots = daySchedule.timeSlots.filter((slot: any) => slot.enabled !== false);
+                                if (activeSlots.length > 0) {
+                                    hasActiveSlots = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    
+                    // Seulement bloquer si le calendar schedule a vraiment des slots actifs
+                    if (hasActiveSlots) {
+                        const key = `${(calendarSchedule as any).user_id}:${(calendarSchedule as any).ad_id}`;
+                        adsWithCalendarSchedules.add(key);
+                    }
+                }
+                
+                if (adsWithCalendarSchedules.size > 0) {
+                    console.log(`📅 Found ${adsWithCalendarSchedules.size} calendar schedule(s) with active slots - blocking recurring schedules`);
+                }
             }
         } else if (calendarError && calendarError.code !== 'PGRST116') {
             console.error('⚠️ Error loading calendar schedules:', calendarError);
@@ -959,11 +983,11 @@ export async function executeSchedules() {
         for (const [userId, userSchedules] of schedules.entries()) {
             
             for (const schedule of userSchedules) {
-                // Ignorer les schedules récurrents si un calendar schedule existe pour cette ad
+                // Ignorer les schedules récurrents si un calendar schedule avec slots actifs existe pour cette ad
                 if (schedule.scheduleType === 'RECURRING_DAILY') {
                     const calendarKey = `${userId}:${schedule.adId}`;
                     if (adsWithCalendarSchedules.has(calendarKey)) {
-                        console.log(`⏭️ Skipping recurring schedule for ad ${schedule.adId} - calendar schedule is active`);
+                        // Ne pas logger pour éviter le spam - le schedule est bloqué silencieusement
                         continue; // Ignorer ce schedule récurrent
                     }
                 }
@@ -971,7 +995,7 @@ export async function executeSchedules() {
                 // Vérifier si le schedule doit être exécuté maintenant
                 const checkResult = checkIfScheduleShouldExecute(schedule, now);
                 
-                // Log détaillé pour déboguer
+                // Log détaillé pour déboguer (seulement si le schedule n'est pas bloqué)
                 if (schedule.scheduleType === 'RECURRING_DAILY') {
                     // Utiliser le timezone du schedule pour le logging aussi
                     const currentMinutes = getCurrentMinutesInTimezone(schedule.timezone);
@@ -1055,14 +1079,14 @@ export async function executeSchedules() {
                         console.log(`📡 Calling Facebook API to update ad ${schedule.adId} status to ${newStatus}...`);
                         
                         // Appeler l'API Facebook pour changer le statut
-                        const response = await fetch(`https://graph.facebook.com/v18.0/${schedule.adId}`, {
+                        // Facebook Graph API nécessite le token dans l'URL, pas dans le body
+                        const response = await fetch(`https://graph.facebook.com/v18.0/${schedule.adId}?access_token=${tokenRow.token}`, {
                             method: 'POST',
                             headers: {
                                 'Content-Type': 'application/json',
                             },
                             body: JSON.stringify({
-                                status: newStatus,
-                                access_token: tokenRow.token
+                                status: newStatus
                             })
                         });
                         
@@ -1349,7 +1373,7 @@ async function logCalendarScheduleExecution(
 
 async function executeCalendarSchedules(calendarSchedules: any[], now: Date) {
     try {
-        console.log(`📅 Executing ${calendarSchedules.length} calendar schedule(s)...`);
+        console.log(`📅 [CALENDAR] Executing ${calendarSchedules.length} calendar schedule(s)...`);
         
         for (const dbSchedule of calendarSchedules) {
             try {
@@ -1357,7 +1381,7 @@ async function executeCalendarSchedules(calendarSchedules: any[], now: Date) {
                 const adId = dbSchedule.ad_id;
                 const timezone = dbSchedule.timezone || 'UTC';
                 
-                // Recharger le schedule depuis la DB pour avoir les dernières valeurs de last_executed_date
+                // Recharger le schedule depuis la DB pour avoir les dernières valeurs
                 const { data: freshSchedule, error: refreshError } = await supabase
                     .from('calendar_schedules')
                     .select('*')
@@ -1366,7 +1390,7 @@ async function executeCalendarSchedules(calendarSchedules: any[], now: Date) {
                     .single();
                 
                 if (refreshError || !freshSchedule) {
-                    console.error(`❌ Error refreshing schedule for ad ${adId}:`, refreshError);
+                    console.error(`❌ [CALENDAR] Error refreshing schedule for ad ${adId}:`, refreshError);
                     continue;
                 }
                 
@@ -1374,259 +1398,335 @@ async function executeCalendarSchedules(calendarSchedules: any[], now: Date) {
                 const currentDateInTimezone = getCurrentDateInTimezone(timezone);
                 const currentMinutesInTimezone = getCurrentMinutesInTimezone(timezone);
                 
+                console.log(`🔍 [CALENDAR] Checking ad ${adId} (timezone: ${timezone}): date=${currentDateInTimezone}, minutes=${currentMinutesInTimezone}`);
+                
                 // Vérifier si ce schedule a un créneau pour aujourd'hui
                 const scheduleData = freshSchedule.schedule_data || {};
                 const daySchedule = scheduleData[currentDateInTimezone];
                 
                 if (!daySchedule || !daySchedule.timeSlots || daySchedule.timeSlots.length === 0) {
+                    console.log(`⏭️ [CALENDAR] No schedule for today (${currentDateInTimezone}) for ad ${adId}`);
                     continue; // Pas de schedule pour aujourd'hui
                 }
                 
+                console.log(`✅ [CALENDAR] Found ${daySchedule.timeSlots.length} slot(s) for today for ad ${adId}`);
+                
                 // Vérifier chaque slot pour voir si on doit exécuter une action
                 for (const slot of daySchedule.timeSlots) {
-                    if (slot.enabled === false) continue; // Slot désactivé
+                    if (slot.enabled === false) {
+                        console.log(`⏭️ [CALENDAR] Slot ${slot.id} is disabled, skipping`);
+                        continue; // Slot désactivé
+                    }
                     
-                    // Vérifier si on doit activer (fenêtre réduite à 1 minute pour éviter les doublons)
-                    if (isTimeMatch(currentMinutesInTimezone, slot.startMinutes, 1)) {
-                        // Vérifier qu'on n'a pas déjà exécuté ce slot aujourd'hui (avec données fraîches)
-                        if (freshSchedule.last_executed_date !== currentDateInTimezone || 
-                            freshSchedule.last_executed_slot_id !== slot.id ||
-                            freshSchedule.last_executed_action !== 'ACTIVE') {
+                    // Log pour déboguer quand on est proche de l'heure
+                    const timeDiffStart = Math.abs(currentMinutesInTimezone - slot.startMinutes);
+                    const timeDiffStop = Math.abs(currentMinutesInTimezone - slot.stopMinutes);
+                    if (timeDiffStart <= 5 || timeDiffStop <= 5) {
+                        console.log(`🔍 [CALENDAR] Slot ${slot.id} for ad ${adId}: current=${currentMinutesInTimezone}, start=${slot.startMinutes}, stop=${slot.stopMinutes}, diffStart=${timeDiffStart}, diffStop=${timeDiffStop}`);
+                    }
+                    
+                    // Vérifier si on doit activer (fenêtre de 5 minutes pour s'assurer de capturer l'exécution)
+                    // Le service s'exécute toutes les 5 secondes, donc une fenêtre de 5 minutes devrait être suffisante
+                    const isActiveTime = isTimeMatch(currentMinutesInTimezone, slot.startMinutes, 5);
+                    const isStopTime = isTimeMatch(currentMinutesInTimezone, slot.stopMinutes, 5);
+                    
+                    if (isActiveTime) {
+                        console.log(`✅ [CALENDAR] ACTIVE time match found for ad ${adId}, slot ${slot.id}, time ${slot.startMinutes}`);
+                        
+                        // Récupérer le token Facebook d'abord pour vérifier le statut
+                        const tokenRow = await getFacebookToken(userId);
+                        if (!tokenRow || !tokenRow.token) {
+                            console.error(`❌ [CALENDAR] No token found for user ${userId}`);
+                            continue;
+                        }
+                        
+                        // Récupérer le statut actuel de l'ad AVANT de vérifier les exécutions
+                        let adStatusBefore = 'UNKNOWN';
+                        try {
+                            const statusResponse = await fetch(`https://graph.facebook.com/v18.0/${adId}?fields=status&access_token=${tokenRow.token}`);
+                            if (statusResponse.ok) {
+                                const statusData = await statusResponse.json();
+                                adStatusBefore = statusData.status || 'UNKNOWN';
+                            }
+                        } catch (statusError) {
+                            console.error(`⚠️ [CALENDAR] Error checking ad status:`, statusError);
+                        }
+                        
+                        console.log(`🔍 [CALENDAR] Current ad status: ${adStatusBefore}`);
+                        
+                        // Si l'ad est déjà ACTIVE, vérifier si on a déjà exécuté ACTIVE pour ce slot aujourd'hui
+                        if (adStatusBefore === 'ACTIVE') {
+                            const alreadyExecutedActive = freshSchedule.last_executed_date === currentDateInTimezone && 
+                                freshSchedule.last_executed_slot_id === slot.id &&
+                                freshSchedule.last_executed_action === 'ACTIVE';
                             
-                            // Vérifier dans l'historique si une exécution similaire existe déjà récemment (fenêtre de 10 minutes)
+                            console.log(`🔍 [CALENDAR] Ad is already ACTIVE, already executed ACTIVE today: ${alreadyExecutedActive}`);
+                            
+                            if (alreadyExecutedActive) {
+                                console.log(`⏭️ [CALENDAR] Skipping ACTIVE - ad already ACTIVE and already executed today for slot ${slot.id}`);
+                                continue;
+                            }
+                            
+                            // Vérifier dans l'historique si une exécution récente existe (fenêtre de 5 minutes)
+                            console.log(`🔍 [CALENDAR] Checking recent ACTIVE execution in history...`);
                             const recentExecution = await checkRecentExecution(
                                 userId, 
                                 adId, 
                                 currentDateInTimezone, 
                                 slot.id, 
                                 'ACTIVE', 
-                                10 // Dans les 10 dernières minutes pour éviter les doublons
+                                5 // 5 minutes seulement pour éviter les doublons
                             );
                             
+                            console.log(`🔍 [CALENDAR] Recent ACTIVE execution found: ${recentExecution}`);
+                            
                             if (recentExecution) {
-                                console.log(`⚠️ Skipping duplicate ACTIVE execution for ad ${adId}, slot ${slot.id} on ${currentDateInTimezone}`);
-                                // Mettre à jour quand même last_executed_date pour éviter de réessayer
-                                await supabase
-                                    .from('calendar_schedules')
-                                    .update({
-                                        last_executed_date: currentDateInTimezone,
-                                        last_executed_slot_id: slot.id,
-                                        last_executed_action: 'ACTIVE',
-                                        updated_at: new Date().toISOString()
-                                    })
-                                    .eq('user_id', userId)
-                                    .eq('ad_id', adId);
-                                continue; // Ignorer les doublons
-                            }
-                            
-                            console.log(`🟢 Executing ACTIVE for calendar schedule: ad ${adId}, slot ${slot.id}, time ${slot.startMinutes}`);
-                            
-                            // Récupérer le token Facebook
-                            const tokenRow = await getFacebookToken(userId);
-                            if (!tokenRow || !tokenRow.token) {
-                                console.error(`❌ No token found for user ${userId}`);
+                                console.log(`⚠️ [CALENDAR] Skipping duplicate ACTIVE execution for ad ${adId}, slot ${slot.id} - ad already ACTIVE`);
                                 continue;
                             }
-                            
-                            // Appeler Facebook API pour activer l'ad
-                            const response = await fetch(`https://graph.facebook.com/v18.0/${adId}`, {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({
-                                    status: 'ACTIVE',
-                                    access_token: tokenRow.token
-                                })
-                            });
-                            
-                            const responseData = await response.json().catch(() => ({}));
-                            
-                            if (response.ok) {
-                                // Mettre à jour le tracking d'exécution (requête optimisée avec index)
-                                await supabase
-                                    .from('calendar_schedules')
-                                    .update({
-                                        last_executed_date: currentDateInTimezone,
-                                        last_executed_slot_id: slot.id,
-                                        last_executed_action: 'ACTIVE',
-                                        updated_at: new Date().toISOString()
-                                    })
-                                    .eq('user_id', userId)
-                                    .eq('ad_id', adId);
-                                
-                                console.log(`✅ Calendar schedule ACTIVE executed for ad ${adId}`);
-                                
-                                // Enregistrer dans l'historique
-                                await logCalendarScheduleExecution(
-                                    userId,
-                                    adId,
-                                    currentDateInTimezone,
-                                    slot.id,
-                                    slot.startMinutes,
-                                    slot.stopMinutes,
-                                    'ACTIVE',
-                                    'SUCCESS',
-                                    now,
-                                    timezone,
-                                    undefined,
-                                    responseData
-                                );
-                                
-                                // Log
-                                await createLog(userId, "CALENDAR_SCHEDULE_EXECUTE", {
-                                    adId,
-                                    action: 'ACTIVE',
-                                    slotId: slot.id,
-                                    date: currentDateInTimezone,
-                                    time: slot.startMinutes
-                                });
-                            } else {
-                                const errorData = await response.json().catch(() => ({}));
-                                const errorMessage = errorData.error?.message || JSON.stringify(errorData);
-                                console.error(`❌ Facebook API error for calendar schedule:`, errorData);
-                                
-                                // Enregistrer l'erreur dans l'historique
-                                await logCalendarScheduleExecution(
-                                    userId,
-                                    adId,
-                                    currentDateInTimezone,
-                                    slot.id,
-                                    slot.startMinutes,
-                                    slot.stopMinutes,
-                                    'ACTIVE',
-                                    'ERROR',
-                                    now,
-                                    timezone,
-                                    errorMessage,
-                                    errorData
-                                );
+                        } else {
+                            // Si l'ad est PAUSED ou autre, on peut toujours l'activer (même s'il y a eu une exécution ACTIVE récente)
+                            console.log(`✅ [CALENDAR] Ad status is ${adStatusBefore}, allowing ACTIVE execution even if recent execution exists`);
+                        }
+                        
+                        console.log(`✅ [CALENDAR] Proceeding with ACTIVE execution...`);
+                        
+                        console.log(`🔄 [CALENDAR] Executing ACTIVE for ad ${adId}, slot ${slot.id}, time ${slot.startMinutes}, CURRENT STATUS: ${adStatusBefore}`);
+                        
+                        // Appeler Facebook API pour activer l'ad
+                        const response = await fetch(`https://graph.facebook.com/v18.0/${adId}?access_token=${tokenRow.token}`, {
+                            method: 'POST',
+                            headers: { 
+                                'Content-Type': 'application/json'
+                            },
+                            body: JSON.stringify({
+                                status: 'ACTIVE'
+                            })
+                        });
+                        
+                        const responseData = await response.json().catch(() => ({}));
+                        
+                        if (response.ok) {
+                            // Vérifier le statut de l'ad APRÈS l'exécution
+                            let adStatusAfter = 'UNKNOWN';
+                            try {
+                                const statusResponseAfter = await fetch(`https://graph.facebook.com/v18.0/${adId}?fields=status&access_token=${tokenRow.token}`);
+                                if (statusResponseAfter.ok) {
+                                    const statusDataAfter = await statusResponseAfter.json();
+                                    adStatusAfter = statusDataAfter.status || 'UNKNOWN';
+                                }
+                            } catch (statusError) {
+                                // Ignorer les erreurs
                             }
+                            
+                            console.log(`✅ [CALENDAR] ACTIVE executed for ad ${adId}, STATUS BEFORE: ${adStatusBefore}, STATUS AFTER: ${adStatusAfter}`);
+                            
+                            // Mettre à jour le tracking d'exécution
+                            await supabase
+                                .from('calendar_schedules')
+                                .update({
+                                    last_executed_date: currentDateInTimezone,
+                                    last_executed_slot_id: slot.id,
+                                    last_executed_action: 'ACTIVE',
+                                    updated_at: new Date().toISOString()
+                                })
+                                .eq('user_id', userId)
+                                .eq('ad_id', adId);
+                            
+                            // Enregistrer dans l'historique
+                            await logCalendarScheduleExecution(
+                                userId,
+                                adId,
+                                currentDateInTimezone,
+                                slot.id,
+                                slot.startMinutes,
+                                slot.stopMinutes,
+                                'ACTIVE',
+                                'SUCCESS',
+                                now,
+                                timezone,
+                                undefined,
+                                responseData
+                            );
+                            
+                            // Log
+                            await createLog(userId, "CALENDAR_SCHEDULE_EXECUTE", {
+                                adId,
+                                action: 'ACTIVE',
+                                slotId: slot.id,
+                                date: currentDateInTimezone,
+                                time: slot.startMinutes
+                            });
+                        } else {
+                            const errorMessage = responseData.error?.message || JSON.stringify(responseData);
+                            console.error(`❌ [CALENDAR] Facebook API error for ACTIVE: ad ${adId}, error:`, errorMessage);
+                            
+                            // Enregistrer l'erreur dans l'historique
+                            await logCalendarScheduleExecution(
+                                userId,
+                                adId,
+                                currentDateInTimezone,
+                                slot.id,
+                                slot.startMinutes,
+                                slot.stopMinutes,
+                                'ACTIVE',
+                                'ERROR',
+                                now,
+                                timezone,
+                                errorMessage,
+                                responseData
+                            );
                         }
                     }
                     
-                    // Vérifier si on doit arrêter (fenêtre réduite à 1 minute pour éviter les doublons)
-                    if (isTimeMatch(currentMinutesInTimezone, slot.stopMinutes, 1)) {
-                        // Recharger le schedule à nouveau pour avoir les dernières valeurs avant STOP
-                        const { data: updatedSchedule } = await supabase
-                            .from('calendar_schedules')
-                            .select('*')
-                            .eq('user_id', userId)
-                            .eq('ad_id', adId)
-                            .single();
+                    // Vérifier si on doit arrêter (fenêtre de 5 minutes pour s'assurer de capturer l'exécution)
+                    if (isStopTime) {
+                        console.log(`✅ [CALENDAR] STOP time match found for ad ${adId}, slot ${slot.id}, time ${slot.stopMinutes}`);
                         
-                        const scheduleToCheck = updatedSchedule || freshSchedule;
+                        // Récupérer le token Facebook d'abord pour vérifier le statut
+                        const tokenRow = await getFacebookToken(userId);
+                        if (!tokenRow || !tokenRow.token) {
+                            console.error(`❌ [CALENDAR] No token found for user ${userId}`);
+                            continue;
+                        }
                         
-                        // Vérifier qu'on n'a pas déjà exécuté ce slot aujourd'hui (avec données fraîches)
-                        if (scheduleToCheck.last_executed_date !== currentDateInTimezone || 
-                            scheduleToCheck.last_executed_slot_id !== slot.id ||
-                            scheduleToCheck.last_executed_action !== 'STOP') {
+                        // Récupérer le statut actuel de l'ad AVANT de vérifier les exécutions
+                        let adStatusBefore = 'UNKNOWN';
+                        try {
+                            const statusResponse = await fetch(`https://graph.facebook.com/v18.0/${adId}?fields=status&access_token=${tokenRow.token}`);
+                            if (statusResponse.ok) {
+                                const statusData = await statusResponse.json();
+                                adStatusBefore = statusData.status || 'UNKNOWN';
+                            }
+                        } catch (statusError) {
+                            console.error(`⚠️ [CALENDAR] Error checking ad status:`, statusError);
+                        }
+                        
+                        console.log(`🔍 [CALENDAR] Current ad status: ${adStatusBefore}`);
+                        
+                        // Si l'ad est déjà PAUSED, vérifier si on a déjà exécuté STOP pour ce slot aujourd'hui
+                        if (adStatusBefore === 'PAUSED') {
+                            const alreadyExecutedStop = freshSchedule.last_executed_date === currentDateInTimezone && 
+                                freshSchedule.last_executed_slot_id === slot.id &&
+                                freshSchedule.last_executed_action === 'STOP';
                             
-                            // Vérifier dans l'historique si une exécution similaire existe déjà récemment (fenêtre de 10 minutes)
+                            console.log(`🔍 [CALENDAR] Ad is already PAUSED, already executed STOP today: ${alreadyExecutedStop}`);
+                            
+                            if (alreadyExecutedStop) {
+                                console.log(`⏭️ [CALENDAR] Skipping STOP - ad already PAUSED and already executed today for slot ${slot.id}`);
+                                continue;
+                            }
+                            
+                            // Vérifier dans l'historique si une exécution récente existe (fenêtre de 5 minutes)
+                            console.log(`🔍 [CALENDAR] Checking recent STOP execution in history...`);
                             const recentExecution = await checkRecentExecution(
                                 userId, 
                                 adId, 
                                 currentDateInTimezone, 
                                 slot.id, 
                                 'STOP', 
-                                10 // Dans les 10 dernières minutes pour éviter les doublons
+                                5 // 5 minutes seulement pour éviter les doublons
                             );
                             
+                            console.log(`🔍 [CALENDAR] Recent STOP execution found: ${recentExecution}`);
+                            
                             if (recentExecution) {
-                                console.log(`⚠️ Skipping duplicate STOP execution for ad ${adId}, slot ${slot.id} on ${currentDateInTimezone}`);
-                                // Mettre à jour quand même last_executed_date pour éviter de réessayer
-                                await supabase
-                                    .from('calendar_schedules')
-                                    .update({
-                                        last_executed_date: currentDateInTimezone,
-                                        last_executed_slot_id: slot.id,
-                                        last_executed_action: 'STOP',
-                                        updated_at: new Date().toISOString()
-                                    })
-                                    .eq('user_id', userId)
-                                    .eq('ad_id', adId);
-                                continue; // Ignorer les doublons
-                            }
-                            
-                            console.log(`🔴 Executing STOP for calendar schedule: ad ${adId}, slot ${slot.id}, time ${slot.stopMinutes}`);
-                            
-                            // Récupérer le token Facebook
-                            const tokenRow = await getFacebookToken(userId);
-                            if (!tokenRow || !tokenRow.token) {
-                                console.error(`❌ No token found for user ${userId}`);
+                                console.log(`⚠️ [CALENDAR] Skipping duplicate STOP execution for ad ${adId}, slot ${slot.id} - ad already PAUSED`);
                                 continue;
                             }
-                            
-                            // Appeler Facebook API pour arrêter l'ad
-                            const response = await fetch(`https://graph.facebook.com/v18.0/${adId}`, {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({
-                                    status: 'PAUSED',
-                                    access_token: tokenRow.token
-                                })
-                            });
-                            
-                            const responseData = await response.json().catch(() => ({}));
-                            
-                            if (response.ok) {
-                                // Mettre à jour le tracking d'exécution (requête optimisée avec index)
-                                await supabase
-                                    .from('calendar_schedules')
-                                    .update({
-                                        last_executed_date: currentDateInTimezone,
-                                        last_executed_slot_id: slot.id,
-                                        last_executed_action: 'STOP',
-                                        updated_at: new Date().toISOString()
-                                    })
-                                    .eq('user_id', userId)
-                                    .eq('ad_id', adId);
-                                
-                                console.log(`✅ Calendar schedule STOP executed for ad ${adId}`);
-                                
-                                // Enregistrer dans l'historique
-                                await logCalendarScheduleExecution(
-                                    userId,
-                                    adId,
-                                    currentDateInTimezone,
-                                    slot.id,
-                                    slot.startMinutes,
-                                    slot.stopMinutes,
-                                    'STOP',
-                                    'SUCCESS',
-                                    now,
-                                    timezone,
-                                    undefined,
-                                    responseData
-                                );
-                                
-                                // Log
-                                await createLog(userId, "CALENDAR_SCHEDULE_EXECUTE", {
-                                    adId,
-                                    action: 'STOP',
-                                    slotId: slot.id,
-                                    date: currentDateInTimezone,
-                                    time: slot.stopMinutes
-                                });
-                            } else {
-                                const errorData = await response.json().catch(() => ({}));
-                                const errorMessage = errorData.error?.message || JSON.stringify(errorData);
-                                console.error(`❌ Facebook API error for calendar schedule:`, errorData);
-                                
-                                // Enregistrer l'erreur dans l'historique
-                                await logCalendarScheduleExecution(
-                                    userId,
-                                    adId,
-                                    currentDateInTimezone,
-                                    slot.id,
-                                    slot.startMinutes,
-                                    slot.stopMinutes,
-                                    'STOP',
-                                    'ERROR',
-                                    now,
-                                    timezone,
-                                    errorMessage,
-                                    errorData
-                                );
+                        } else {
+                            // Si l'ad est ACTIVE ou autre, on peut toujours l'arrêter (même s'il y a eu une exécution STOP récente)
+                            // car l'ad a pu être réactivée entre-temps
+                            console.log(`✅ [CALENDAR] Ad status is ${adStatusBefore}, allowing STOP execution even if recent execution exists`);
+                        }
+                        
+                        console.log(`✅ [CALENDAR] Proceeding with STOP execution...`);
+                        
+                        console.log(`🔄 [CALENDAR] Executing STOP for ad ${adId}, slot ${slot.id}, time ${slot.stopMinutes}, CURRENT STATUS: ${adStatusBefore}`);
+                        
+                        // Appeler Facebook API pour arrêter l'ad
+                        const response = await fetch(`https://graph.facebook.com/v18.0/${adId}?access_token=${tokenRow.token}`, {
+                            method: 'POST',
+                            headers: { 
+                                'Content-Type': 'application/json'
+                            },
+                            body: JSON.stringify({
+                                status: 'PAUSED'
+                            })
+                        });
+                        
+                        const responseData = await response.json().catch(() => ({}));
+                        
+                        if (response.ok) {
+                            // Vérifier le statut de l'ad APRÈS l'exécution
+                            let adStatusAfter = 'UNKNOWN';
+                            try {
+                                const statusResponseAfter = await fetch(`https://graph.facebook.com/v18.0/${adId}?fields=status&access_token=${tokenRow.token}`);
+                                if (statusResponseAfter.ok) {
+                                    const statusDataAfter = await statusResponseAfter.json();
+                                    adStatusAfter = statusDataAfter.status || 'UNKNOWN';
+                                }
+                            } catch (statusError) {
+                                // Ignorer les erreurs
                             }
+                            
+                            console.log(`✅ [CALENDAR] STOP executed for ad ${adId}, STATUS BEFORE: ${adStatusBefore}, STATUS AFTER: ${adStatusAfter}`);
+                            
+                            // Mettre à jour le tracking d'exécution
+                            await supabase
+                                .from('calendar_schedules')
+                                .update({
+                                    last_executed_date: currentDateInTimezone,
+                                    last_executed_slot_id: slot.id,
+                                    last_executed_action: 'STOP',
+                                    updated_at: new Date().toISOString()
+                                })
+                                .eq('user_id', userId)
+                                .eq('ad_id', adId);
+                            
+                            // Enregistrer dans l'historique
+                            await logCalendarScheduleExecution(
+                                userId,
+                                adId,
+                                currentDateInTimezone,
+                                slot.id,
+                                slot.startMinutes,
+                                slot.stopMinutes,
+                                'STOP',
+                                'SUCCESS',
+                                now,
+                                timezone,
+                                undefined,
+                                responseData
+                            );
+                            
+                            // Log
+                            await createLog(userId, "CALENDAR_SCHEDULE_EXECUTE", {
+                                adId,
+                                action: 'STOP',
+                                slotId: slot.id,
+                                date: currentDateInTimezone,
+                                time: slot.stopMinutes
+                            });
+                        } else {
+                            const errorMessage = responseData.error?.message || JSON.stringify(responseData);
+                            console.error(`❌ [CALENDAR] Facebook API error for STOP: ad ${adId}, error:`, errorMessage);
+                            
+                            // Enregistrer l'erreur dans l'historique
+                            await logCalendarScheduleExecution(
+                                userId,
+                                adId,
+                                currentDateInTimezone,
+                                slot.id,
+                                slot.startMinutes,
+                                slot.stopMinutes,
+                                'STOP',
+                                'ERROR',
+                                now,
+                                timezone,
+                                errorMessage,
+                                responseData
+                            );
                         }
                     }
                 }

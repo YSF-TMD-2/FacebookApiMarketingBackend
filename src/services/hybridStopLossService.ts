@@ -361,14 +361,14 @@ class HybridStopLossService {
       }
 
       // 2. Réactiver l'annonce sur Facebook
+      // Facebook Graph API nécessite le token dans l'URL, pas dans le body
       const fbResponse = await fetch(
-        `https://graph.facebook.com/v18.0/${adId}`,
+        `https://graph.facebook.com/v18.0/${adId}?access_token=${tokenRow.token}`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            status: 'ACTIVE',
-            access_token: tokenRow.token
+            status: 'ACTIVE'
           })
         }
       );
@@ -438,14 +438,14 @@ class HybridStopLossService {
       }
 
       // 2. CRITIQUE : Mettre à jour l'annonce sur Facebook d'abord
+      // Facebook Graph API nécessite le token dans l'URL, pas dans le body
       const fbResponse = await fetch(
-        `https://graph.facebook.com/v18.0/${adId}`,
+        `https://graph.facebook.com/v18.0/${adId}?access_token=${tokenRow.token}`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            status: 'PAUSED',
-            access_token: tokenRow.token
+            status: 'PAUSED'
           })
         }
       );
