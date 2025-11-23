@@ -39,8 +39,6 @@ function normalizeAdStatus(status: string | undefined | null): string {
 
 // Fonction utilitaire pour récupérer le token Facebook
 export async function getFacebookToken(userId: string): Promise<FacebookToken> {
-    console.log(`🔍 [getFacebookToken] Fetching token for userId: ${userId}`);
-    
     const { data: tokenRow, error: tokenError } = await supabase
         .from('access_tokens')
         .select('*')
@@ -69,30 +67,14 @@ export async function getFacebookToken(userId: string): Promise<FacebookToken> {
         throw new Error('No access token found');
     }
 
-    console.log(`✅ [getFacebookToken] Token found for userId ${userId}:`, {
-        id: tokenRow.id,
-        userId: tokenRow.userId,
-        tokenLength: tokenRow.token?.length || 0,
-        hasToken: !!tokenRow.token,
-        tokenPreview: tokenRow.token ? `${tokenRow.token.substring(0, 10)}...` : 'null'
-    });
-
     return tokenRow;
 }
 
 // Fonction utilitaire pour appeler l'API Facebook avec support AbortController
 export async function fetchFbGraph(accessToken: string, endpoint: string = 'me', signal?: AbortSignal, userId?: string) {
     try {
-        console.log('🔍 fetchFbGraph called with:', {
-            endpoint,
-            accessToken: accessToken ? accessToken.substring(0, 10) + '...' : 'undefined',
-            hasSignal: !!signal,
-            userId: userId || 'unknown'
-        });
-
         // Vérifier si la requête a été annulée
         if (signal?.aborted) {
-            console.log('Request aborted before execution');
             throw new Error('Request aborted');
         }
 
@@ -130,7 +112,6 @@ export async function fetchFbGraph(accessToken: string, endpoint: string = 'me',
             const userRequests = activeRequests.get(userId) || [];
             const filteredRequests = userRequests.filter(controller => controller !== localController);
             activeRequests.set(userId, filteredRequests);
-            console.log(' Request completed and cleaned up for user:', userId);
         }
 
         //console.log(' fetchFbGraph success:', response.data);
@@ -145,7 +126,6 @@ export async function fetchFbGraph(accessToken: string, endpoint: string = 'me',
 
         // Vérifier si c'est une annulation
         if (error.name === 'AbortError' || error.message === 'Request aborted') {
-            console.log('Request aborted during execution');
             throw new Error('Request aborted');
         }
         
@@ -161,13 +141,6 @@ export async function fetchFbGraph(accessToken: string, endpoint: string = 'me',
 // Fonction pour récupérer TOUS les résultats avec pagination
 export async function fetchFbGraphPaginated(accessToken: string, endpoint: string, signal?: AbortSignal, userId?: string, maxPages: number = 50) {
     try {
-        console.log('🔍 fetchFbGraphPaginated called with:', {
-            endpoint,
-            accessToken: accessToken ? accessToken.substring(0, 10) + '...' : 'undefined',
-            hasSignal: !!signal,
-            userId: userId || 'unknown',
-            maxPages
-        });
 
         let allData: any[] = [];
         let nextUrl: string | null = null;
@@ -181,12 +154,10 @@ export async function fetchFbGraphPaginated(accessToken: string, endpoint: strin
         do {
             // Vérifier si la requête a été annulée
             if (signal?.aborted) {
-                console.log('🛑 Request aborted during pagination');
                 throw new Error('Request aborted');
             }
 
             const urlToFetch = nextUrl || initialUrl;
-            console.log(`🔍 Fetching page ${pageCount + 1}:`, urlToFetch);
 
             const response = await axios.get(urlToFetch, {
                 headers: {
@@ -202,7 +173,6 @@ export async function fetchFbGraphPaginated(accessToken: string, endpoint: strin
             // Ajouter les données de cette page
             if (responseData.data && Array.isArray(responseData.data)) {
                 allData = allData.concat(responseData.data);
-                console.log(`📊 Page ${pageCount + 1}: ${responseData.data.length} items, Total so far: ${allData.length}`);
             }
 
             // Vérifier s'il y a une page suivante
@@ -211,14 +181,11 @@ export async function fetchFbGraphPaginated(accessToken: string, endpoint: strin
 
             // Limiter le nombre de pages pour éviter les boucles infinies
             if (pageCount >= maxPages) {
-                console.log(`⚠️ Reached maximum pages limit (${maxPages}), stopping pagination`);
                 break;
             }
 
         } while (nextUrl);
 
-        console.log(`✅ fetchFbGraphPaginated completed: ${allData.length} total items across ${pageCount} pages`);
-        
         return {
             data: allData,
             paging: {
@@ -240,11 +207,6 @@ export async function fetchFbGraphPaginated(accessToken: string, endpoint: strin
 // POST /api/facebook/token - Sauvegarder le token Facebook
 export async function saveAccessToken(req: Request, res: Response) {
     try {
-        console.log('🔍 saveAccessToken called with:', {
-            body: req.body,
-            user: req.user,
-            headers: req.headers
-        });
 
         // Récupérer l'userId depuis le token JWT dans les headers
         let userId = req.user?.id;
@@ -259,7 +221,6 @@ export async function saveAccessToken(req: Request, res: Response) {
                     // Décoder le JWT (partie payload)
                     const payload = JSON.parse(Buffer.from(token.split('.')[1], 'base64').toString());
                     userId = payload.sub; // Le 'sub' contient l'userId
-                    console.log('🔍 Extracted userId from JWT:', userId);
                 } catch (error) {
                     console.error('❌ Error decoding JWT:', error);
                 }
@@ -272,21 +233,17 @@ export async function saveAccessToken(req: Request, res: Response) {
         }
         const { accessToken } = req.body;
 
-        console.log('Processing with userId:', userId, 'accessToken:', accessToken ? accessToken.substring(0, 10) + '...' : 'undefined');
 
         if (!accessToken) {
             return res.status(400).json({ message: "Access token is required" });
         }
 
         // Vérifier si un token existe déjà pour cet utilisateur
-        console.log('Checking for existing token for userId:', userId);
         const { data: existingToken, error: existingTokenError } = await supabase
             .from('access_tokens')
             .select('*')
             .eq('userId', userId)
             .single();
-        
-        console.log('🔍 Existing token result:', existingToken);
         if (existingTokenError && existingTokenError.code !== 'PGRST116') {
             console.error('❌ Error checking existing token:', existingTokenError);
         }
@@ -321,9 +278,7 @@ export async function saveAccessToken(req: Request, res: Response) {
         }
 
         // Créer ou mettre à jour le token
-        console.log('🔍 Processing token save/update for userId:', userId);
         if (existingToken) {
-            console.log('🔍 Updating existing token for userId:', userId);
             const { error: updateError } = await (supabase as any)
                 .from('access_tokens')
                 .update({ 
@@ -337,9 +292,7 @@ export async function saveAccessToken(req: Request, res: Response) {
                 console.error('❌ Update error:', updateError);
                 return res.status(500).json({ message: 'Database error' });
             }
-            console.log('✅ Token updated successfully');
         } else {
-            console.log('🔍 Creating new token for userId:', userId);
             // Vérifier d'abord si ce token existe déjà pour un autre utilisateur
             const { data: existingTokenByValue } = await supabase
                 .from('access_tokens')
@@ -348,7 +301,6 @@ export async function saveAccessToken(req: Request, res: Response) {
                 .single();
             
             if (existingTokenByValue) {
-                console.log('🔍 Token already exists for another user, updating userId');
                 // Mettre à jour l'userId du token existant
                 const { error: updateUserIdError } = await (supabase as any)
                     .from('access_tokens')
@@ -359,7 +311,6 @@ export async function saveAccessToken(req: Request, res: Response) {
                     console.error('❌ Update userId error:', updateUserIdError);
                     return res.status(500).json({ message: 'Database error' });
                 }
-                console.log('✅ Token userId updated successfully');
             } else {
                 // Créer un nouveau token
                 const { error: insertError } = await supabase
@@ -375,7 +326,6 @@ export async function saveAccessToken(req: Request, res: Response) {
                     console.error('❌ Insert error:', insertError);
                     return res.status(500).json({ message: 'Database error' });
                 }
-                console.log('✅ Token created successfully');
             }
         }
 
@@ -390,20 +340,16 @@ export async function saveAccessToken(req: Request, res: Response) {
 
 // GET /api/facebook/user-data - Récupérer les données utilisateur Facebook
 export async function getUserData(req: Request, res: Response) {
-    console.log("getting user data");
     try {
         const userId = req.user!.id;
-        console.log('🔍 Getting user data for userId:', userId);
 
         try {
             const tokenRow = await getFacebookToken(userId);
-            console.log('🔍 Token retrieved for user:', userId);
 
             // Récupérer les données de base de Facebook avec gestion d'erreur
             let userData = {};
             try {
                 userData = await fetchFbGraph(tokenRow.token, 'me?fields=id,name,email');
-                console.log('✅ User data retrieved successfully');
             } catch (error) {
                 console.error('❌ Error fetching user data:', error);
                 // Continuer avec des données vides
@@ -414,7 +360,6 @@ export async function getUserData(req: Request, res: Response) {
             try {
                 const accountsData = await fetchFbGraph(tokenRow.token, 'me/adaccounts?fields=id,name,account_status,currency,amount_spent');
                 adAccounts = accountsData.data || [];
-                console.log('✅ Ad accounts retrieved:', adAccounts.length, 'accounts');
                 
                 // Utiliser les comptes publicitaires de base (sans calcul de total spend)
                 // Le total spend est maintenant calculé dynamiquement avec le filtre de dates
@@ -429,7 +374,6 @@ export async function getUserData(req: Request, res: Response) {
             try {
                 const pagesData = await fetchFbGraph(tokenRow.token, 'me/accounts?fields=id,name,category');
                 pages = pagesData.data || [];
-                console.log('✅ Pages retrieved:', pages.length, 'pages');
             } catch (error) {
                 console.error('❌ Error fetching pages:', error);
                 // Continuer avec une liste vide
@@ -440,16 +384,13 @@ export async function getUserData(req: Request, res: Response) {
             try {
                 const businessData = await fetchFbGraph(tokenRow.token, 'me/businesses?fields=id,name,timezone_name');
                 business = businessData.data || [];
-                console.log('✅ Business managers retrieved:', business.length, 'managers');
             } catch (error) {
                 console.error('❌ Error fetching business managers:', error);
                 // Si erreur de limite de requêtes, essayer avec des champs de base
                 if (error.message && error.message.includes('Application request limit reached')) {
-                    console.log('⚠️ Rate limit reached, trying with basic fields...');
                     try {
                         const basicBusinessData = await fetchFbGraph(tokenRow.token, 'me/businesses?fields=id,name');
                         business = basicBusinessData.data || [];
-                        console.log('✅ Business managers retrieved with basic fields:', business.length, 'managers');
                     } catch (basicError) {
                         console.error('❌ Error fetching business managers with basic fields:', basicError);
                         business = [];
@@ -467,7 +408,6 @@ export async function getUserData(req: Request, res: Response) {
                 tokenInfo: { valid: true }
             };
 
-            console.log('✅ Facebook data prepared successfully');
             return res.json({
                 success: true,
                 data: facebookData,
@@ -1225,13 +1165,6 @@ export async function getBusinessAdAccounts(req: Request, res: Response) {
                     cpm: parseFloat(insights.cpm || 0),
                     ctr: parseFloat(insights.ctr || 0),
                     conversions: parseInt(insights.conversions || 0)
-                });
-                
-                console.log(`✅ Added metrics for account ${account.name}:`, {
-                    spend: insights.spend || account.amount_spent,
-                    clicks: insights.clicks,
-                    impressions: insights.impressions,
-                    ctr: insights.ctr
                 });
             } catch (error) {
                 console.log(`⚠️ Error getting insights for account ${account.name}:`, error);

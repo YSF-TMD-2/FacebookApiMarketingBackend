@@ -23,11 +23,6 @@ export function getSupabaseAdminClient() {
 
   // Log de diagnostic (seulement au premier appel)
   if (!isInitialized) {
-    console.log('🔧 [ROLE MIDDLEWARE] Initialization:');
-    console.log('  - SUPABASE_URL:', url ? '✅ Configuré' : '❌ Manquant');
-    console.log('  - SUPABASE_SERVICE_ROLE_KEY:', process.env.SUPABASE_SERVICE_ROLE_KEY ? '✅ Configuré (' + process.env.SUPABASE_SERVICE_ROLE_KEY.substring(0, 20) + '...)' : '❌ Manquant');
-    console.log('  - SUPABASE_ANON_KEY:', process.env.SUPABASE_ANON_KEY ? '✅ Configuré' : '❌ Manquant');
-    console.log('  - Using key type:', process.env.SUPABASE_SERVICE_ROLE_KEY ? 'service_role (bypasses RLS) ✅' : process.env.SUPABASE_ANON_KEY ? 'anon (RLS active) ⚠️' : 'fallback (RLS active) ⚠️');
     isInitialized = true;
   }
 

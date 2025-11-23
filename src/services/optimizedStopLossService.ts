@@ -66,7 +66,6 @@ class OptimizedStopLossService {
     if (this.config?.enabled) {
       await this.start();
     }
-    console.log('✅ Optimized Stop-Loss Service initialized');
   }
 
   /**
@@ -93,12 +92,10 @@ class OptimizedStopLossService {
           quota_threshold_percent: 80,
           throttle_enabled: true
         };
-        console.log('⚠️ Using default batch config');
         return;
       }
 
       this.config = ((data as any).value as any) as BatchConfig;
-      console.log('✅ Batch config loaded:', this.config);
     } catch (error) {
       console.error('❌ Error loading config:', error);
       throw error;
@@ -110,27 +107,21 @@ class OptimizedStopLossService {
    */
   async start(): Promise<void> {
     if (this.isRunning) {
-      console.log('⚠️ Stop-loss service already running');
       return;
     }
 
     await this.loadConfig();
     if (!this.config?.enabled) {
-      console.log('⚠️ Stop-loss batch is disabled in config');
       return;
     }
 
     // Vérifier s'il y a des ads à surveiller avant de démarrer
     const adsWithStopLoss = await this.getAdsWithStopLoss();
     if (adsWithStopLoss.length === 0) {
-      console.log('📭 No ads with stop-loss enabled - service will not start');
-      console.log('💡 Service will automatically start when a stop-loss is enabled');
       return;
     }
 
     this.isRunning = true;
-    console.log(`🚀 Starting optimized stop-loss service (interval: ${this.config.batch_interval_ms}ms)`);
-    console.log(`📊 Monitoring ${adsWithStopLoss.length} ads with stop-loss enabled`);
 
     // Exécuter immédiatement
     await this.processBatch();
@@ -159,7 +150,6 @@ class OptimizedStopLossService {
     if (!this.isRunning) {
       const adsWithStopLoss = await this.getAdsWithStopLoss();
       if (adsWithStopLoss.length > 0) {
-        console.log(`🔄 Restarting stop-loss service - ${adsWithStopLoss.length} ads to monitor`);
         await this.start();
       }
     }
@@ -174,7 +164,6 @@ class OptimizedStopLossService {
       clearInterval(this.batchInterval);
       this.batchInterval = null;
     }
-    console.log('🛑 Optimized stop-loss service stopped');
   }
 
   /**
@@ -190,19 +179,16 @@ class OptimizedStopLossService {
     }
 
     try {
-      console.log('🔄 Starting stop-loss batch processing...');
 
       // 1. Récupérer toutes les ads avec stop-loss activé
       const adsWithStopLoss = await this.getAdsWithStopLoss();
       
       if (adsWithStopLoss.length === 0) {
-        console.log('📭 No ads with stop-loss enabled - stopping batch service');
         // Arrêter le service batch s'il n'y a plus d'ads à surveiller
         await this.stop();
         return;
       }
 
-      console.log(`📊 Processing ${adsWithStopLoss.length} ads with stop-loss enabled`);
 
       // 2. Grouper par utilisateur et compte publicitaire
       const groupedAds = this.groupAdsByUserAndAccount(adsWithStopLoss);
@@ -227,7 +213,6 @@ class OptimizedStopLossService {
         }
       }
 
-      console.log('✅ Stop-loss batch processing completed');
 
     } catch (error) {
       console.error('❌ Error in batch processing:', error);
@@ -263,10 +248,6 @@ class OptimizedStopLossService {
         enabled: item.enabled
       }));
 
-      console.log(`📊 [Batch] Found ${ads.length} ads with stop-loss enabled`);
-      ads.forEach(ad => {
-        console.log(`  - Ad ${ad.ad_id}: zero_results_spend=${ad.zero_results_spend_threshold}, cost_per_result=${ad.cost_per_result_threshold}`);
-      });
 
       return ads;
     } catch (error) {
@@ -387,7 +368,6 @@ class OptimizedStopLossService {
 
       // Utiliser Meta Batch API pour récupérer SEULEMENT spend et actions
       // C'est optimisé : un seul appel batch pour toutes les ads au lieu de N appels
-      console.log(`📦 Fetching insights for ${adIds.length} ads using batch API (${key})`);
       
       const insightsMap = await metaBatchAPI.fetchStopLossInsights(
         token,
@@ -400,30 +380,16 @@ class OptimizedStopLossService {
       // Traiter chaque ad
       const processedAds: ProcessedAd[] = [];
 
-      console.log(`🔍 [Batch] Insights map contains ${insightsMap.size} entries`);
-      console.log(`🔍 [Batch] Insights map keys:`, Array.from(insightsMap.keys()));
-
       for (const ad of ads) {
-        console.log(`🔍 [Batch] Looking for metrics for ad ${ad.ad_id}`);
         const metrics = insightsMap.get(ad.ad_id);
         
         if (!metrics) {
-          console.error(`❌ [Batch] No metrics found for ad ${ad.ad_id}`);
-          console.error(`❌ [Batch] Available keys in map:`, Array.from(insightsMap.keys()));
-          console.error(`❌ [Batch] Ad ID type: ${typeof ad.ad_id}, value: ${ad.ad_id}`);
           // Ajouter à la retry queue
           await this.addToRetryQueue(userId, ad.ad_id, 'No metrics returned');
           continue;
         }
         
-        console.log(`✅ [Batch] Metrics found for ad ${ad.ad_id}: spend=$${metrics.spend}, results=${metrics.results}`);
-
         // Vérifier les conditions de stop-loss
-        console.log(`🔍 [Batch] Evaluating stop-loss for ad ${ad.ad_id}: spend=$${metrics.spend.toFixed(2)}, results=${metrics.results}`);
-        console.log(`🔍 [Batch] Thresholds: cost_per_result=${ad.cost_per_result_threshold}, zero_results_spend=${ad.zero_results_spend_threshold}`);
-        console.log(`🔍 [Batch] Thresholds enabled: cpr_enabled=${ad.cpr_enabled}, zero_results_enabled=${ad.zero_results_enabled}`);
-        console.log(`🔍 [Batch] Ad enabled: ${ad.enabled}`);
-        
         const shouldStop = this.evaluateStopConditions(
           metrics,
           ad.cost_per_result_threshold,
@@ -431,14 +397,6 @@ class OptimizedStopLossService {
           ad.cpr_enabled,
           ad.zero_results_enabled
         );
-
-        console.log(`🔍 [Batch] Should stop for ad ${ad.ad_id}: ${shouldStop}`);
-        
-        if (shouldStop) {
-          console.log(`🛑 [Batch] Stop-loss triggered for ad ${ad.ad_id}: ${this.getStopReason(metrics, ad)}`);
-        } else {
-          console.log(`✅ [Batch] No stop-loss trigger for ad ${ad.ad_id} - conditions not met`);
-        }
 
         // Calculer les valeurs pour la notification et le log
         let threshold: number | undefined;
@@ -475,16 +433,8 @@ class OptimizedStopLossService {
       // Mettre en pause les ads qui doivent être arrêtées
       const adsToPause = processedAds.filter(ad => ad.shouldStop);
       
-      console.log(`🔍 [Batch] Processed ${processedAds.length} ads, ${adsToPause.length} need to be paused`);
-      
       if (adsToPause.length > 0) {
-        console.log(`🛑 [Batch] Pausing ${adsToPause.length} ads due to stop-loss triggers:`);
-        adsToPause.forEach(ad => {
-          console.log(`  - Ad ${ad.adId}: ${ad.reason}`);
-        });
         await this.pauseAdsInBatch(token, adsToPause, userId, accountId);
-      } else {
-        console.log(`✅ [Batch] No ads to pause for group ${key}`);
       }
 
     } catch (error) {
@@ -588,10 +538,7 @@ class OptimizedStopLossService {
       for (const ad of ads) {
         const success = pauseResults.get(ad.adId);
         
-        console.log(`🔍 [Batch] Pause result for ad ${ad.adId}: ${success ? 'SUCCESS' : 'FAILED'}`);
-        
         if (success) {
-          console.log(`✅ [Batch] Ad ${ad.adId} paused successfully. Reason: ${ad.reason}`);
           
           // 1. Récupérer le nom de l'ad depuis stop_loss_settings
           let adName: string | undefined;
@@ -605,13 +552,10 @@ class OptimizedStopLossService {
               .maybeSingle();
             
             if (fetchError) {
-              console.warn(`⚠️ [Batch] Could not fetch ad name for ${ad.adId}:`, fetchError);
             } else if (stopLossData) {
               adName = (stopLossData as any).ad_name || undefined;
-              console.log(`✅ [Batch] Fetched ad name for ${ad.adId}: ${adName}`);
             }
           } catch (error) {
-            console.warn(`⚠️ [Batch] Exception fetching ad name for ${ad.adId}:`, error);
           }
           
           // 2. Désactiver le stop-loss pour arrêter le batch (économiser les appels API)
@@ -631,8 +575,6 @@ class OptimizedStopLossService {
               console.error(`❌ [Batch] Error disabling stop-loss for ad ${ad.adId}:`, disableError);
               console.error(`❌ [Batch] Error details:`, JSON.stringify(disableError, null, 2));
             } else {
-              console.log(`✅ [Batch] Stop-loss disabled for ad ${ad.adId} to stop batch monitoring`);
-              console.log(`✅ [Batch] Updated config:`, JSON.stringify(updateData, null, 2));
             }
           } catch (error) {
             console.error(`⚠️ [Batch] Exception disabling stop-loss for ad ${ad.adId}:`, error);
@@ -674,7 +616,6 @@ class OptimizedStopLossService {
             // Continuer même si le log échoue
           }
           
-          console.log(`✅ [Batch] Completed all actions for ad ${ad.adId} (pause, disable, notification, log)`);
         } else {
           console.error(`❌ [Batch] Failed to pause ad ${ad.adId}`);
           // Échec, ajouter à retry queue

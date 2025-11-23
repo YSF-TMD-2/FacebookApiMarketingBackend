@@ -81,7 +81,6 @@ class MetaBatchAPI {
     if (!canMakeRequest) {
       const waitTime = await rateLimitManager.getWaitTime(userId, accountId);
       if (waitTime > 0) {
-        console.log(`⏳ Waiting ${waitTime}ms before batch request due to quota...`);
         await this.sleep(waitTime);
       }
     }
@@ -92,7 +91,6 @@ class MetaBatchAPI {
 
     for (let i = 0; i < chunks.length; i++) {
       const chunk = chunks[i];
-      console.log(`📦 Processing batch chunk ${i + 1}/${chunks.length} (${chunk.length} requests)`);
 
       try {
         // Construire l'URL du batch
@@ -112,18 +110,12 @@ class MetaBatchAPI {
 
         const batchData: BatchResponse[] = await response.json();
         
-        console.log(`🔍 [Batch] Batch response received: ${batchData.length} items`);
-        console.log(`🔍 [Batch] Batch response structure:`, JSON.stringify(batchData, null, 2));
 
         // Traiter chaque réponse du batch
         for (let j = 0; j < batchData.length; j++) {
           const batchItem = batchData[j];
           const originalRequest = chunk[j];
           
-          console.log(`🔍 [Batch] Processing batch item ${j + 1}/${batchData.length}:`, {
-            code: batchItem.code,
-            relative_url: originalRequest.relative_url
-          });
 
           if (batchItem.code === 200) {
             try {
@@ -131,22 +123,10 @@ class MetaBatchAPI {
                 ? JSON.parse(batchItem.body) 
                 : batchItem.body;
               
-              console.log(`🔍 [Batch] Parsed body for item ${j + 1}:`, {
-                hasData: !!body.data,
-                dataLength: body.data?.length,
-                bodyKeys: Object.keys(body)
-              });
 
               const extractedAdId = this.extractAdIdFromUrl(originalRequest.relative_url);
               const insights = body.data?.[0] || body;
               
-              console.log(`🔍 [Batch] Extracted adId: ${extractedAdId}`);
-              console.log(`🔍 [Batch] Insights structure:`, {
-                hasSpend: !!insights.spend,
-                hasActions: !!insights.actions,
-                hasConversions: !!insights.conversions,
-                insightsKeys: Object.keys(insights)
-              });
 
               results.push({
                 success: true,
@@ -157,7 +137,6 @@ class MetaBatchAPI {
                 }
               });
               
-              console.log(`✅ [Batch] Successfully processed batch item ${j + 1} for ad ${extractedAdId}`);
 
               // Réinitialiser le backoff en cas de succès
               rateLimitManager.resetBackoff(userId, accountId);
@@ -261,17 +240,9 @@ class MetaBatchAPI {
       const batchResults = await this.executeBatch(accessToken, batchRequests, userId, accountId);
 
       for (const result of batchResults) {
-        console.log(`🔍 [Batch] Processing batch result:`, {
-          success: result.success,
-          hasData: !!result.data,
-          dataKeys: result.data ? Object.keys(result.data) : []
-        });
-        
         if (result.success && result.data) {
           const adId = result.data.adId;
           const insights = result.data.insights;
-          
-          console.log(`🔍 [Batch] Extracted adId: ${adId}, has insights: ${!!insights}`);
           
           if (!adId) {
             console.error(`❌ [Batch] No adId found in result.data:`, result.data);
@@ -292,9 +263,7 @@ class MetaBatchAPI {
           // Sinon, compter uniquement les types exacts 'lead', 'purchase', 'conversion' (pas les variations)
           if (insights.conversions || insights.conversion_values) {
             resultsCount = parseFloat(insights.conversions || insights.conversion_values || 0);
-            console.log(`🔍 [Batch] Using conversions field for ad ${adId}: ${resultsCount}`);
           } else if (insights.actions && Array.isArray(insights.actions)) {
-            console.log(`🔍 [Batch] Actions for ad ${adId}:`, JSON.stringify(insights.actions, null, 2));
             
             // Compter uniquement les types exacts pour éviter les doublons
             resultsCount = insights.actions.reduce((total: number, action: any) => {
@@ -307,18 +276,12 @@ class MetaBatchAPI {
                               actionType === 'conversion';
               
               if (isResult && actionValue > 0) {
-                console.log(`✅ [Batch] Found result action for ad ${adId}: type=${actionType}, value=${actionValue}`);
                 return total + actionValue;
               }
               return total;
             }, 0);
             
-            console.log(`🔍 [Batch] Total results from actions (exact types only) for ad ${adId}: ${resultsCount}`);
-          } else {
-            console.log(`⚠️ [Batch] No conversions or actions data for ad ${adId}`);
           }
-
-          console.log(`📊 [Batch] Final metrics for ad ${adId}: spend=$${spend.toFixed(2)}, results=${resultsCount}`);
           results.set(adId, { spend, results: resultsCount });
         } else {
           console.error(`❌ [Batch] Batch result failed or missing data:`, {
@@ -330,7 +293,6 @@ class MetaBatchAPI {
       }
     }
 
-    console.log(`📊 [Batch] Total metrics retrieved: ${results.size} ads`);
     return results;
   }
 
@@ -343,34 +305,22 @@ class MetaBatchAPI {
     userId: string,
     accountId?: string
   ): Promise<Map<string, boolean>> {
-    console.log(`🛑 [Batch] Attempting to pause ${adIds.length} ads`);
     const results = new Map<string, boolean>();
     const batches = this.chunkArray(adIds, this.MAX_BATCH_SIZE);
 
     for (const batch of batches) {
-      console.log(`🛑 [Batch] Processing pause batch of ${batch.length} ads`);
-      console.log(`🛑 [Batch] Ad IDs to pause:`, batch);
       const batchRequests = this.createPauseBatch(batch);
-      console.log(`🛑 [Batch] Batch requests created:`, batchRequests.map(req => req.relative_url));
       
       const batchResults = await this.executeBatch(accessToken, batchRequests, userId, accountId);
-      console.log(`🛑 [Batch] Received ${batchResults.length} batch results`);
 
       for (let i = 0; i < batchResults.length; i++) {
         const result = batchResults[i];
         const adId = batch[i];
         
-        console.log(`🔍 [Batch] Processing pause result ${i + 1}/${batchResults.length} for ad ${adId}:`, {
-          success: result.success,
-          hasError: !!result.error,
-          error: result.error
-        });
-        
         const success = result.success || false;
         results.set(adId, success);
         
         if (success) {
-          console.log(`✅ [Batch] Ad ${adId} paused successfully via batch API`);
         } else {
           console.error(`❌ [Batch] Failed to pause ad ${adId}:`, result.error || 'Unknown error');
           if (result.error) {
@@ -383,13 +333,11 @@ class MetaBatchAPI {
     const successCount = Array.from(results.entries()).filter(([_, success]) => success).length;
     const failedCount = results.size - successCount;
     
-    console.log(`📊 [Batch] Pause results summary: ${successCount}/${results.size} ads paused successfully`);
     
     if (failedCount > 0) {
       const failedAds = Array.from(results.entries())
         .filter(([_, success]) => !success)
         .map(([adId]) => adId);
-      console.warn(`⚠️ [Batch] ${failedCount} ads failed to pause:`, failedAds);
     }
     
     if (successCount === 0 && results.size > 0) {
@@ -412,7 +360,6 @@ class MetaBatchAPI {
     
     const match = relativeUrl.match(/^([^/?]+)/);
     const extracted = match ? match[1] : '';
-    console.log(`🔍 [Batch] Extracting adId from URL "${relativeUrl}" -> "${extracted}"`);
     return extracted;
   }
 

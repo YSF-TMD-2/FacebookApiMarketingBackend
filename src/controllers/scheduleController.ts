@@ -909,7 +909,6 @@ export async function executeSchedules() {
         
         // Si la Map est vide, essayer de charger depuis la DB
         if (schedules.size === 0) {
-            console.log('⚠️ No schedules in memory, loading from database...');
             await loadSchedulesFromDB();
         }
         
@@ -963,7 +962,6 @@ export async function executeSchedules() {
                 }
                 
                 if (adsWithCalendarSchedules.size > 0) {
-                    console.log(`📅 Found ${adsWithCalendarSchedules.size} calendar schedule(s) with active slots - blocking recurring schedules`);
                 }
             }
         } else if (calendarError && calendarError.code !== 'PGRST116') {
@@ -1373,7 +1371,6 @@ async function logCalendarScheduleExecution(
 
 async function executeCalendarSchedules(calendarSchedules: any[], now: Date) {
     try {
-        console.log(`📅 [CALENDAR] Executing ${calendarSchedules.length} calendar schedule(s)...`);
         
         for (const dbSchedule of calendarSchedules) {
             try {
@@ -1398,7 +1395,6 @@ async function executeCalendarSchedules(calendarSchedules: any[], now: Date) {
                 const currentDateInTimezone = getCurrentDateInTimezone(timezone);
                 const currentMinutesInTimezone = getCurrentMinutesInTimezone(timezone);
                 
-                console.log(`🔍 [CALENDAR] Checking ad ${adId} (timezone: ${timezone}): date=${currentDateInTimezone}, minutes=${currentMinutesInTimezone}`);
                 
                 // Vérifier si ce schedule a un créneau pour aujourd'hui
                 const scheduleData = freshSchedule.schedule_data || {};
@@ -1409,7 +1405,6 @@ async function executeCalendarSchedules(calendarSchedules: any[], now: Date) {
                     continue; // Pas de schedule pour aujourd'hui
                 }
                 
-                console.log(`✅ [CALENDAR] Found ${daySchedule.timeSlots.length} slot(s) for today for ad ${adId}`);
                 
                 // Vérifier chaque slot pour voir si on doit exécuter une action
                 for (const slot of daySchedule.timeSlots) {
@@ -1468,7 +1463,6 @@ async function executeCalendarSchedules(calendarSchedules: any[], now: Date) {
                             }
                             
                             // Vérifier dans l'historique si une exécution récente existe (fenêtre de 5 minutes)
-                            console.log(`🔍 [CALENDAR] Checking recent ACTIVE execution in history...`);
                             const recentExecution = await checkRecentExecution(
                                 userId, 
                                 adId, 
@@ -1618,7 +1612,6 @@ async function executeCalendarSchedules(calendarSchedules: any[], now: Date) {
                             }
                             
                             // Vérifier dans l'historique si une exécution récente existe (fenêtre de 5 minutes)
-                            console.log(`🔍 [CALENDAR] Checking recent STOP execution in history...`);
                             const recentExecution = await checkRecentExecution(
                                 userId, 
                                 adId, 

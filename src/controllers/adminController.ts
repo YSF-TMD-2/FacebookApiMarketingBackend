@@ -1431,23 +1431,6 @@ export async function getAdStopLossAnalytics(req: ExpressRequest, res: Response)
       });
     }
 
-    console.log(`📊 [ADMIN] Found ${adLogs.length} stop-loss events for ad ${adId}`);
-    
-    // Debug: Afficher les premiers logs pour vérifier la structure
-    if (adLogs.length > 0) {
-      console.log(`📊 [ADMIN] Sample log structure:`, JSON.stringify(adLogs[0], null, 2));
-    } else {
-      console.log(`⚠️ [ADMIN] No logs found for ad ${adId}, userId: ${userId}`);
-      // Essayer de voir s'il y a des logs pour cet utilisateur sans filtre adId
-      const { data: allUserLogs } = await supabaseAdmin
-        .from('logs')
-        .select('id, action, user_id, userId, details')
-        .eq('action', 'STOP_LOSS_TRIGGERED')
-        .or(`user_id.eq.${userId},userId.eq.${userId}`)
-        .limit(5);
-      console.log(`📊 [ADMIN] Sample logs for user (first 5):`, JSON.stringify(allUserLogs, null, 2));
-    }
-
     // Récupérer les informations utilisateur
     let userInfo = { email: null, name: null };
     try {

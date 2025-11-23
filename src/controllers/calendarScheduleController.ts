@@ -98,7 +98,6 @@ export async function getCalendarSchedule(req: Request, res: Response) {
         const userId = req.user!.id;
         const { adId } = req.params;
         
-        console.log(`📅 Getting calendar schedule for ad ${adId}`);
         
         // Utiliser le cache pour éviter les requêtes DB fréquentes
         const calendarSchedule = await getCalendarScheduleFromCacheOrDB(userId, adId);
