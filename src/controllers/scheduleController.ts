@@ -1420,10 +1420,10 @@ async function executeCalendarSchedules(calendarSchedules: any[], now: Date) {
                         console.log(`🔍 [CALENDAR] Slot ${slot.id} for ad ${adId}: current=${currentMinutesInTimezone}, start=${slot.startMinutes}, stop=${slot.stopMinutes}, diffStart=${timeDiffStart}, diffStop=${timeDiffStop}`);
                     }
                     
-                    // Vérifier si on doit activer (fenêtre de 5 minutes pour s'assurer de capturer l'exécution)
-                    // Le service s'exécute toutes les 5 secondes, donc une fenêtre de 5 minutes devrait être suffisante
-                    const isActiveTime = isTimeMatch(currentMinutesInTimezone, slot.startMinutes, 5);
-                    const isStopTime = isTimeMatch(currentMinutesInTimezone, slot.stopMinutes, 5);
+                    // Vérifier si on doit activer (fenêtre de 2 minutes pour plus de précision)
+                    // Le service s'exécute toutes les 5 secondes, donc une fenêtre de 2 minutes est suffisante
+                    const isActiveTime = isTimeMatch(currentMinutesInTimezone, slot.startMinutes, 2);
+                    const isStopTime = isTimeMatch(currentMinutesInTimezone, slot.stopMinutes, 2);
                     
                     if (isActiveTime) {
                         console.log(`✅ [CALENDAR] ACTIVE time match found for ad ${adId}, slot ${slot.id}, time ${slot.startMinutes}`);
@@ -1449,41 +1449,41 @@ async function executeCalendarSchedules(calendarSchedules: any[], now: Date) {
                         
                         console.log(`🔍 [CALENDAR] Current ad status: ${adStatusBefore}`);
                         
-                        // Si l'ad est déjà ACTIVE, vérifier si on a déjà exécuté ACTIVE pour ce slot aujourd'hui
-                        if (adStatusBefore === 'ACTIVE') {
-                            const alreadyExecutedActive = freshSchedule.last_executed_date === currentDateInTimezone && 
-                                freshSchedule.last_executed_slot_id === slot.id &&
-                                freshSchedule.last_executed_action === 'ACTIVE';
-                            
-                            console.log(`🔍 [CALENDAR] Ad is already ACTIVE, already executed ACTIVE today: ${alreadyExecutedActive}`);
-                            
-                            if (alreadyExecutedActive) {
-                                console.log(`⏭️ [CALENDAR] Skipping ACTIVE - ad already ACTIVE and already executed today for slot ${slot.id}`);
-                                continue;
-                            }
-                            
-                            // Vérifier dans l'historique si une exécution récente existe (fenêtre de 5 minutes)
-                            const recentExecution = await checkRecentExecution(
-                                userId, 
-                                adId, 
-                                currentDateInTimezone, 
-                                slot.id, 
-                                'ACTIVE', 
-                                5 // 5 minutes seulement pour éviter les doublons
-                            );
-                            
-                            console.log(`🔍 [CALENDAR] Recent ACTIVE execution found: ${recentExecution}`);
-                            
-                            if (recentExecution) {
-                                console.log(`⚠️ [CALENDAR] Skipping duplicate ACTIVE execution for ad ${adId}, slot ${slot.id} - ad already ACTIVE`);
-                                continue;
-                            }
-                        } else {
-                            // Si l'ad est PAUSED ou autre, on peut toujours l'activer (même s'il y a eu une exécution ACTIVE récente)
-                            console.log(`✅ [CALENDAR] Ad status is ${adStatusBefore}, allowing ACTIVE execution even if recent execution exists`);
+                        // Vérifier si on a déjà exécuté ACTIVE pour ce slot aujourd'hui
+                        const alreadyExecutedActive = freshSchedule.last_executed_date === currentDateInTimezone && 
+                            freshSchedule.last_executed_slot_id === slot.id &&
+                            freshSchedule.last_executed_action === 'ACTIVE';
+                        
+                        // Vérifier dans l'historique si une exécution récente existe (fenêtre de 2 minutes pour éviter les doublons)
+                        const recentExecution = await checkRecentExecution(
+                            userId, 
+                            adId, 
+                            currentDateInTimezone, 
+                            slot.id, 
+                            'ACTIVE', 
+                            2 // 2 minutes pour éviter les doublons
+                        );
+                        
+                        console.log(`🔍 [CALENDAR] Already executed ACTIVE today: ${alreadyExecutedActive}, Recent execution found: ${recentExecution}`);
+                        
+                        // Logique améliorée : exécuter ACTIVE si :
+                        // 1. L'ad n'est PAS déjà ACTIVE, OU
+                        // 2. L'ad est ACTIVE mais on n'a pas encore exécuté ACTIVE pour ce slot aujourd'hui, OU
+                        // 3. L'ad est ACTIVE mais il n'y a pas eu d'exécution récente (l'ad a pu être modifiée manuellement)
+                        if (adStatusBefore === 'ACTIVE' && alreadyExecutedActive && recentExecution) {
+                            // L'ad est déjà ACTIVE, on a déjà exécuté ACTIVE pour ce slot aujourd'hui, 
+                            // et il y a eu une exécution récente - donc l'ad est toujours dans l'état attendu
+                            console.log(`⏭️ [CALENDAR] Skipping ACTIVE - ad already ACTIVE and already executed recently for slot ${slot.id}`);
+                            continue;
                         }
                         
-                        console.log(`✅ [CALENDAR] Proceeding with ACTIVE execution...`);
+                        // Si l'ad est ACTIVE mais qu'on n'a pas d'exécution récente, c'est qu'elle a pu être modifiée manuellement
+                        // ou qu'il y a eu un problème - on réexécute pour s'assurer qu'elle reste ACTIVE
+                        if (adStatusBefore === 'ACTIVE' && !recentExecution) {
+                            console.log(`⚠️ [CALENDAR] Ad is ACTIVE but no recent execution found - may have been manually changed, re-executing ACTIVE`);
+                        }
+                        
+                        console.log(`✅ [CALENDAR] Proceeding with ACTIVE execution (status: ${adStatusBefore}, needs activation: ${adStatusBefore !== 'ACTIVE'})`);
                         
                         console.log(`🔄 [CALENDAR] Executing ACTIVE for ad ${adId}, slot ${slot.id}, time ${slot.startMinutes}, CURRENT STATUS: ${adStatusBefore}`);
                         
@@ -1573,7 +1573,7 @@ async function executeCalendarSchedules(calendarSchedules: any[], now: Date) {
                         }
                     }
                     
-                    // Vérifier si on doit arrêter (fenêtre de 5 minutes pour s'assurer de capturer l'exécution)
+                    // Vérifier si on doit arrêter (fenêtre de 2 minutes pour plus de précision)
                     if (isStopTime) {
                         console.log(`✅ [CALENDAR] STOP time match found for ad ${adId}, slot ${slot.id}, time ${slot.stopMinutes}`);
                         
@@ -1598,42 +1598,41 @@ async function executeCalendarSchedules(calendarSchedules: any[], now: Date) {
                         
                         console.log(`🔍 [CALENDAR] Current ad status: ${adStatusBefore}`);
                         
-                        // Si l'ad est déjà PAUSED, vérifier si on a déjà exécuté STOP pour ce slot aujourd'hui
-                        if (adStatusBefore === 'PAUSED') {
-                            const alreadyExecutedStop = freshSchedule.last_executed_date === currentDateInTimezone && 
-                                freshSchedule.last_executed_slot_id === slot.id &&
-                                freshSchedule.last_executed_action === 'STOP';
-                            
-                            console.log(`🔍 [CALENDAR] Ad is already PAUSED, already executed STOP today: ${alreadyExecutedStop}`);
-                            
-                            if (alreadyExecutedStop) {
-                                console.log(`⏭️ [CALENDAR] Skipping STOP - ad already PAUSED and already executed today for slot ${slot.id}`);
-                                continue;
-                            }
-                            
-                            // Vérifier dans l'historique si une exécution récente existe (fenêtre de 5 minutes)
-                            const recentExecution = await checkRecentExecution(
-                                userId, 
-                                adId, 
-                                currentDateInTimezone, 
-                                slot.id, 
-                                'STOP', 
-                                5 // 5 minutes seulement pour éviter les doublons
-                            );
-                            
-                            console.log(`🔍 [CALENDAR] Recent STOP execution found: ${recentExecution}`);
-                            
-                            if (recentExecution) {
-                                console.log(`⚠️ [CALENDAR] Skipping duplicate STOP execution for ad ${adId}, slot ${slot.id} - ad already PAUSED`);
-                                continue;
-                            }
-                        } else {
-                            // Si l'ad est ACTIVE ou autre, on peut toujours l'arrêter (même s'il y a eu une exécution STOP récente)
-                            // car l'ad a pu être réactivée entre-temps
-                            console.log(`✅ [CALENDAR] Ad status is ${adStatusBefore}, allowing STOP execution even if recent execution exists`);
+                        // Vérifier si on a déjà exécuté STOP pour ce slot aujourd'hui
+                        const alreadyExecutedStop = freshSchedule.last_executed_date === currentDateInTimezone && 
+                            freshSchedule.last_executed_slot_id === slot.id &&
+                            freshSchedule.last_executed_action === 'STOP';
+                        
+                        // Vérifier dans l'historique si une exécution récente existe (fenêtre de 2 minutes pour éviter les doublons)
+                        const recentExecution = await checkRecentExecution(
+                            userId, 
+                            adId, 
+                            currentDateInTimezone, 
+                            slot.id, 
+                            'STOP', 
+                            2 // 2 minutes pour éviter les doublons
+                        );
+                        
+                        console.log(`🔍 [CALENDAR] Already executed STOP today: ${alreadyExecutedStop}, Recent execution found: ${recentExecution}`);
+                        
+                        // Logique améliorée : exécuter STOP si :
+                        // 1. L'ad n'est PAS déjà PAUSED, OU
+                        // 2. L'ad est PAUSED mais on n'a pas encore exécuté STOP pour ce slot aujourd'hui, OU
+                        // 3. L'ad est PAUSED mais il n'y a pas eu d'exécution récente (l'ad a pu être modifiée manuellement)
+                        if (adStatusBefore === 'PAUSED' && alreadyExecutedStop && recentExecution) {
+                            // L'ad est déjà PAUSED, on a déjà exécuté STOP pour ce slot aujourd'hui, 
+                            // et il y a eu une exécution récente - donc l'ad est toujours dans l'état attendu
+                            console.log(`⏭️ [CALENDAR] Skipping STOP - ad already PAUSED and already executed recently for slot ${slot.id}`);
+                            continue;
                         }
                         
-                        console.log(`✅ [CALENDAR] Proceeding with STOP execution...`);
+                        // Si l'ad est PAUSED mais qu'on n'a pas d'exécution récente, c'est qu'elle a pu être modifiée manuellement
+                        // ou qu'il y a eu un problème - on réexécute pour s'assurer qu'elle reste PAUSED
+                        if (adStatusBefore === 'PAUSED' && !recentExecution) {
+                            console.log(`⚠️ [CALENDAR] Ad is PAUSED but no recent execution found - may have been manually changed, re-executing STOP`);
+                        }
+                        
+                        console.log(`✅ [CALENDAR] Proceeding with STOP execution (status: ${adStatusBefore}, needs pausing: ${adStatusBefore !== 'PAUSED'})`);
                         
                         console.log(`🔄 [CALENDAR] Executing STOP for ad ${adId}, slot ${slot.id}, time ${slot.stopMinutes}, CURRENT STATUS: ${adStatusBefore}`);
                         
