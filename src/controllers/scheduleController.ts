@@ -941,34 +941,37 @@ export async function executeSchedules() {
             
             // Vérifier si chaque calendar schedule a vraiment des slots actifs
             for (const calendarSchedule of activeCalendarSchedules) {
-                    const scheduleData = (calendarSchedule as any).schedule_data || {};
-                    let hasActiveSlots = false;
-                    
-                    // Vérifier si le schedule a des slots actifs (au moins un slot enabled !== false)
-                    for (const dateKey in scheduleData) {
-                        if (scheduleData.hasOwnProperty(dateKey)) {
-                            const daySchedule = scheduleData[dateKey];
-                            if (daySchedule.timeSlots && daySchedule.timeSlots.length > 0) {
-                                const activeSlots = daySchedule.timeSlots.filter((slot: any) => slot.enabled !== false);
-                                if (activeSlots.length > 0) {
-                                    hasActiveSlots = true;
-                                    break;
-                                }
+                const scheduleData = (calendarSchedule as any).schedule_data || {};
+                let hasActiveSlots = false;
+                
+                // Vérifier si le schedule a des slots actifs (au moins un slot enabled !== false)
+                for (const dateKey in scheduleData) {
+                    if (scheduleData.hasOwnProperty(dateKey)) {
+                        const daySchedule = scheduleData[dateKey];
+                        if (daySchedule.timeSlots && daySchedule.timeSlots.length > 0) {
+                            const activeSlots = daySchedule.timeSlots.filter((slot: any) => slot.enabled !== false);
+                            if (activeSlots.length > 0) {
+                                hasActiveSlots = true;
+                                break;
                             }
                         }
                     }
-                    
-                    // Seulement bloquer si le calendar schedule a vraiment des slots actifs
-                    if (hasActiveSlots) {
-                        const key = `${(calendarSchedule as any).user_id}:${(calendarSchedule as any).ad_id}`;
-                        adsWithCalendarSchedules.add(key);
-                    }
                 }
                 
-                if (adsWithCalendarSchedules.size > 0) {
+                // Seulement bloquer si le calendar schedule a vraiment des slots actifs
+                if (hasActiveSlots) {
+                    const key = `${(calendarSchedule as any).user_id}:${(calendarSchedule as any).ad_id}`;
+                    adsWithCalendarSchedules.add(key);
                 }
             }
-        } else if (calendarError && calendarError.code !== 'PGRST116') {
+            
+            if (adsWithCalendarSchedules.size > 0) {
+                console.log(`📅 [EXECUTE] ${adsWithCalendarSchedules.size} calendar schedule(s) with active slots found`);
+            }
+        }
+        
+        // Vérifier s'il y a eu une erreur lors du chargement des calendar schedules
+        if (calendarError && calendarError.code !== 'PGRST116') {
             console.error('⚠️ Error loading calendar schedules:', calendarError);
         }
         
