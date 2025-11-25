@@ -1,6 +1,6 @@
 import { Router } from "express";
 import protect from "../middleware/authMiddleware.js";
-import { createSchedule, testExecuteSchedules, createTestSchedule, createTestTimeRangeSchedule, debugSchedules, createImmediateTestSchedule, forceExecuteSchedule, getScheduleAnalytics, getAdSchedules, deleteAdSchedules, getAllScheduledAds, deleteSchedule, getCalendarSchedule, createCalendarSchedule, updateCalendarSchedule, deleteCalendarScheduleDate, deleteCalendarSchedule } from "../controllers/scheduleController.js";
+import { createSchedule, testExecuteSchedules, cronExecuteSchedules, createTestSchedule, createTestTimeRangeSchedule, debugSchedules, createImmediateTestSchedule, forceExecuteSchedule, getScheduleAnalytics, getAdSchedules, deleteAdSchedules, getAllScheduledAds, deleteSchedule, getCalendarSchedule, createCalendarSchedule, updateCalendarSchedule, deleteCalendarScheduleDate, deleteCalendarSchedule } from "../controllers/scheduleController.js";
 import { getCalendarScheduleHistory, deleteCalendarScheduleHistory, getAllCalendarSchedules } from "../controllers/calendarScheduleController.js";
 import { Request, Response } from "../types/express.js";
 
@@ -28,6 +28,10 @@ router.delete("/ad/:adId", protect, deleteAdSchedules);
 
 // Tester l'exécution des schedules (pour debug)
 router.post("/test-execute", protect, testExecuteSchedules);
+
+// Endpoint pour cron job externe (gratuit) - appelé par des services comme cron-job.org
+// Usage: GET /api/schedules/cron-execute?secret=your-secret
+router.get("/cron-execute", cronExecuteSchedules);
 
 // Créer un schedule de test (date dans le passé pour exécution immédiate)
 router.post("/test-schedule/:adId", protect, createTestSchedule);

@@ -1864,6 +1864,43 @@ export async function testExecuteSchedules(req: Request, res: Response) {
     }
 }
 
+// Endpoint pour cron job externe (gratuit) - appelé par des services comme cron-job.org, easycron, etc.
+export async function cronExecuteSchedules(req: Request, res: Response) {
+    try {
+        // Vérifier le secret pour la sécurité (passé en query param ou header)
+        const providedSecret = req.query.secret as string || req.headers['x-cron-secret'] as string;
+        const expectedSecret = process.env.CRON_SECRET || 'change-this-secret-in-production';
+        
+        if (!providedSecret || providedSecret !== expectedSecret) {
+            console.warn('⚠️ Unauthorized cron execution attempt');
+            return res.status(401).json({
+                success: false,
+                message: "Unauthorized - Invalid secret"
+            });
+        }
+        
+        console.log('⏰ [CRON] Starting scheduled execution...');
+        const startTime = Date.now();
+        await executeSchedules();
+        const duration = Date.now() - startTime;
+        
+        console.log(`✅ [CRON] Schedule execution completed in ${duration}ms`);
+        
+        return res.json({
+            success: true,
+            message: "Schedule execution completed",
+            duration: `${duration}ms`,
+            timestamp: new Date().toISOString()
+        });
+    } catch (error: any) {
+        console.error('❌ [CRON] Error in cron execute schedules:', error);
+        return res.status(500).json({
+            success: false,
+            message: error.message || "Server error"
+        });
+    }
+}
+
 
 // Récupérer les analytics des schedules
 export async function getScheduleAnalytics(req: Request, res: Response) {
