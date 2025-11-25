@@ -70,72 +70,173 @@ export async function getFacebookToken(userId: string): Promise<FacebookToken> {
     return tokenRow;
 }
 
-// Fonction utilitaire pour appeler l'API Facebook avec support AbortController
-export async function fetchFbGraph(accessToken: string, endpoint: string = 'me', signal?: AbortSignal, userId?: string) {
-    try {
-        // Vérifier si la requête a été annulée
-        if (signal?.aborted) {
-            throw new Error('Request aborted');
-        }
+// Fonction utilitaire pour appeler l'API Facebook avec support AbortController, retry et rate limiting
+export async function fetchFbGraph(
+    accessToken: string, 
+    endpoint: string = 'me', 
+    signal?: AbortSignal, 
+    userId?: string,
+    options: {
+        maxRetries?: number;
+        retryDelay?: number;
+        skipRateLimit?: boolean;
+    } = {}
+) {
+    const { maxRetries = 3, retryDelay = 1000, skipRateLimit = false } = options;
+    let lastError: any = null;
 
-        // Créer un AbortController local si pas de signal fourni
-        let localController: AbortController | null = null;
-        let finalSignal = signal;
+    // Importer rateLimitManager dynamiquement pour éviter les dépendances circulaires
+    const { rateLimitManager } = await import('../services/rateLimitManager.js');
 
-        if (!signal && userId) {
-            localController = new AbortController();
-            finalSignal = localController.signal;
-            
-            // Enregistrer le controller dans la map des requêtes actives
-            const userRequests = activeRequests.get(userId) || [];
-            userRequests.push(localController);
-            activeRequests.set(userId, userRequests);
-            
-            //console.log('Registered request for user:', userId, 'Total active:', userRequests.length);
-        }
-
-        const response = await axios.get(
-            `https://graph.facebook.com/v18.0/${endpoint}`,
-            {
-                headers: {
-                    'Authorization': `Bearer ${accessToken}`,
-                    'Content-Type': 'application/json'
-                },
-                signal: finalSignal, // Passer le signal d'annulation à axios
-                timeout: 30000 // Timeout de 30 secondes
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+        try {
+            // Vérifier si la requête a été annulée
+            if (signal?.aborted) {
+                throw new Error('Request aborted');
             }
-        );
-        //console.log('response.data : ' , response.data);
 
-        // Nettoyer le controller local après succès
-        if (localController && userId) {
-            const userRequests = activeRequests.get(userId) || [];
-            const filteredRequests = userRequests.filter(controller => controller !== localController);
-            activeRequests.set(userId, filteredRequests);
-        }
+            // Vérifier le rate limit avant de faire la requête (sauf si skipRateLimit est true)
+            if (!skipRateLimit && userId) {
+                const canMakeRequest = await rateLimitManager.canMakeRequest(userId);
+                if (!canMakeRequest) {
+                    const waitTime = await rateLimitManager.getWaitTime(userId);
+                    if (waitTime > 0) {
+                        console.log(`⏳ [RATE LIMIT] Waiting ${waitTime}ms before request for user ${userId}`);
+                        await new Promise(resolve => setTimeout(resolve, waitTime));
+                    }
+                }
+            }
 
-        //console.log(' fetchFbGraph success:', response.data);
-        return response.data;
-    } catch (error: any) {
-        // Nettoyer le controller local en cas d'erreur
-        if (userId) {
-            const userRequests = activeRequests.get(userId) || [];
-            const filteredRequests = userRequests.filter(controller => !controller.signal.aborted);
-            activeRequests.set(userId, filteredRequests);
-        }
+            // Créer un AbortController local si pas de signal fourni
+            let localController: AbortController | null = null;
+            let finalSignal = signal;
 
-        // Vérifier si c'est une annulation
-        if (error.name === 'AbortError' || error.message === 'Request aborted') {
-            throw new Error('Request aborted');
+            if (!signal && userId) {
+                localController = new AbortController();
+                finalSignal = localController.signal;
+                
+                // Enregistrer le controller dans la map des requêtes actives
+                const userRequests = activeRequests.get(userId) || [];
+                userRequests.push(localController);
+                activeRequests.set(userId, userRequests);
+            }
+
+            const response = await axios.get(
+                `https://graph.facebook.com/v18.0/${endpoint}`,
+                {
+                    headers: {
+                        'Authorization': `Bearer ${accessToken}`,
+                        'Content-Type': 'application/json'
+                    },
+                    signal: finalSignal,
+                    timeout: 30000
+                }
+            );
+
+            // Nettoyer le controller local après succès
+            if (localController && userId) {
+                const userRequests = activeRequests.get(userId) || [];
+                const filteredRequests = userRequests.filter(controller => controller !== localController);
+                activeRequests.set(userId, filteredRequests);
+            }
+
+            // Mettre à jour le quota après succès
+            if (!skipRateLimit && userId && response.headers) {
+                const quotaHeaders = rateLimitManager.parseQuotaHeaders(response.headers as any);
+                await rateLimitManager.updateQuota(userId, undefined, quotaHeaders);
+                rateLimitManager.resetBackoff(userId);
+            }
+
+            return response.data;
+
+        } catch (error: any) {
+            lastError = error;
+
+            // Nettoyer le controller local en cas d'erreur
+            if (userId) {
+                const userRequests = activeRequests.get(userId) || [];
+                const filteredRequests = userRequests.filter(controller => !controller.signal.aborted);
+                activeRequests.set(userId, filteredRequests);
+            }
+
+            // Vérifier si c'est une annulation
+            if (error.name === 'AbortError' || error.message === 'Request aborted') {
+                throw new Error('Request aborted');
+            }
+
+            const errorData = error.response?.data?.error || {};
+            const errorCode = errorData.code;
+            const errorMessage = errorData.message || error.message;
+            const statusCode = error.response?.status || 0;
+
+            // Gestion spécifique des erreurs de permissions (#10)
+            if (errorCode === 10) {
+                console.error(`❌ [PERMISSION ERROR] Application does not have permission for this action: ${endpoint}`);
+                // Ne pas retry pour les erreurs de permissions - c'est un problème de configuration
+                throw new Error(`Permission denied: ${errorMessage}. Please check your Facebook app permissions.`);
+            }
+
+            // Gestion des rate limits (code 17 ou 4)
+            if (errorCode === 17 || errorCode === 4 || statusCode === 429) {
+                console.warn(`⚠️ [RATE LIMIT] Rate limit hit (code ${errorCode}), attempt ${attempt + 1}/${maxRetries}`);
+                
+                if (userId) {
+                    const backoffDelay = rateLimitManager.getBackoffDelay(userId);
+                    rateLimitManager.incrementBackoff(userId);
+                    
+                    if (attempt < maxRetries) {
+                        console.log(`⏳ [RATE LIMIT] Waiting ${backoffDelay}ms before retry...`);
+                        await new Promise(resolve => setTimeout(resolve, backoffDelay));
+                        continue; // Retry
+                    }
+                }
+                
+                // Si on a épuisé les tentatives, throw une erreur spécifique
+                throw new Error(`Rate limit exceeded. Please wait before making more requests.`);
+            }
+
+            // Gestion des erreurs de token expiré (code 190)
+            if (errorCode === 190) {
+                console.error(`❌ [TOKEN EXPIRED] Facebook token expired for user ${userId}`);
+                throw new Error(`Facebook token expired. Please reconnect your account.`);
+            }
+
+            // Gestion des erreurs 400 (Bad Request) - souvent permissions ou paramètres invalides
+            if (statusCode === 400 && errorCode !== 10) {
+                console.error(`❌ [BAD REQUEST] Invalid request: ${endpoint}`, errorMessage);
+                // Ne pas retry pour les erreurs 400 (sauf rate limit)
+                throw new Error(`Invalid request: ${errorMessage}`);
+            }
+
+            // Gestion des erreurs 500 (Server Error) - retry avec backoff
+            if (statusCode >= 500 && attempt < maxRetries) {
+                const delay = retryDelay * Math.pow(2, attempt);
+                console.warn(`⚠️ [SERVER ERROR] Server error (${statusCode}), retrying in ${delay}ms...`);
+                await new Promise(resolve => setTimeout(resolve, delay));
+                continue; // Retry
+            }
+
+            // Si c'est la dernière tentative ou une erreur non-retryable, log et throw
+            if (attempt === maxRetries) {
+                console.error(`❌ [FINAL ERROR] fetchFbGraph error after ${maxRetries} retries:`, {
+                    endpoint,
+                    message: errorMessage,
+                    status: statusCode,
+                    code: errorCode,
+                    userId
+                });
+            } else {
+                // Retry avec backoff exponentiel pour les autres erreurs
+                const delay = retryDelay * Math.pow(2, attempt);
+                console.warn(`⚠️ [RETRY] Error (${errorMessage}), retrying in ${delay}ms... (attempt ${attempt + 1}/${maxRetries})`);
+                await new Promise(resolve => setTimeout(resolve, delay));
+                continue;
+            }
         }
-        
-        console.error('❌ fetchFbGraph error:', {
-            message: error.message,
-            status: error.response?.status,
-            data: error.response?.data
-        });
-        throw error;
     }
+
+    // Si on arrive ici, toutes les tentatives ont échoué
+    throw lastError || new Error('Request failed after all retries');
 }
 
 // Fonction pour récupérer TOUS les résultats avec pagination
@@ -1245,7 +1346,16 @@ export async function getAdDetails(req: Request, res: Response) {
                     adDetails.creative.thumbnail_url = videoDetails.picture;
                 }
             } catch (videoError: any) {
-                console.log('⚠️ Could not fetch video URL:', videoError.message);
+                const errorCode = videoError.response?.data?.error?.code;
+                const errorMessage = videoError.response?.data?.error?.message || videoError.message;
+                
+                // Gestion spécifique des erreurs de permissions (#10)
+                if (errorCode === 10) {
+                    console.warn(`⚠️ [getAdDetails] Permission denied for video endpoint: ${errorMessage}`);
+                } else {
+                    console.log('⚠️ Could not fetch video URL:', errorMessage);
+                }
+                // Continuer sans la vidéo - ce n'est pas critique
             }
         }
 

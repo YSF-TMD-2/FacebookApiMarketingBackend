@@ -2,6 +2,7 @@ import { Request, Response } from "../types/express.js";
 import { getFacebookToken, fetchFbGraph } from "./facebookController.js";
 import { createLog } from "../services/loggerService.js";
 import { supabase } from "../supabaseClient.js";
+import axios from "axios";
 
 // Exporter les interfaces pour utilisation dans calendarScheduleController
 export type { CalendarScheduleData, TimeSlot, DaySchedule };
@@ -1487,20 +1488,60 @@ async function executeCalendarSchedules(calendarSchedules: any[], now: Date) {
                         
                         console.log(`🔄 [CALENDAR] Executing ACTIVE for ad ${adId}, slot ${slot.id}, time ${slot.startMinutes}, CURRENT STATUS: ${adStatusBefore}`);
                         
-                        // Appeler Facebook API pour activer l'ad
-                        const response = await fetch(`https://graph.facebook.com/v18.0/${adId}?access_token=${tokenRow.token}`, {
-                            method: 'POST',
-                            headers: { 
-                                'Content-Type': 'application/json'
-                            },
-                            body: JSON.stringify({
-                                status: 'ACTIVE'
-                            })
-                        });
+                        // Appeler Facebook API pour activer l'ad avec retry et gestion d'erreurs
+                        let responseData: any = {};
+                        let executionSuccess = false;
+                        try {
+                            const response = await axios.post(
+                                `https://graph.facebook.com/v18.0/${adId}`,
+                                { status: 'ACTIVE' },
+                                {
+                                    headers: {
+                                        'Authorization': `Bearer ${tokenRow.token}`,
+                                        'Content-Type': 'application/json'
+                                    },
+                                    timeout: 30000
+                                }
+                            );
+                            responseData = response.data;
+                            executionSuccess = true;
+                        } catch (apiError: any) {
+                            const errorData = apiError.response?.data?.error || {};
+                            const errorCode = errorData.code;
+                            const errorMessage = errorData.message || apiError.message;
+                            
+                            // Gestion spécifique des erreurs de permissions (#10)
+                            if (errorCode === 10) {
+                                console.error(`❌ [CALENDAR] Permission denied for ACTIVE action on ad ${adId}: ${errorMessage}`);
+                                await logCalendarScheduleExecution(
+                                    userId,
+                                    adId,
+                                    currentDateInTimezone,
+                                    slot.id,
+                                    slot.startMinutes,
+                                    slot.stopMinutes,
+                                    'ACTIVE',
+                                    'ERROR',
+                                    now,
+                                    timezone,
+                                    `Permission denied: ${errorMessage}`,
+                                    errorData
+                                );
+                                continue; // Skip ce slot
+                            }
+                            
+                            // Gestion des rate limits
+                            if (errorCode === 17 || errorCode === 4 || apiError.response?.status === 429) {
+                                console.warn(`⚠️ [CALENDAR] Rate limit hit for ACTIVE action on ad ${adId}, will retry later`);
+                                // Ne pas enregistrer comme erreur, le système retry automatiquement
+                                continue;
+                            }
+                            
+                            responseData = apiError.response?.data || {};
+                            console.error(`❌ [CALENDAR] Facebook API error for ACTIVE: ad ${adId}, error:`, errorMessage);
+                        }
                         
-                        const responseData = await response.json().catch(() => ({}));
-                        
-                        if (response.ok) {
+                        if (executionSuccess) {
                             // Vérifier le statut de l'ad APRÈS l'exécution
                             let adStatusAfter = 'UNKNOWN';
                             try {
@@ -1587,13 +1628,18 @@ async function executeCalendarSchedules(calendarSchedules: any[], now: Date) {
                         // Récupérer le statut actuel de l'ad AVANT de vérifier les exécutions
                         let adStatusBefore = 'UNKNOWN';
                         try {
-                            const statusResponse = await fetch(`https://graph.facebook.com/v18.0/${adId}?fields=status&access_token=${tokenRow.token}`);
-                            if (statusResponse.ok) {
-                                const statusData = await statusResponse.json();
-                                adStatusBefore = statusData.status || 'UNKNOWN';
+                            const statusData = await fetchFbGraph(tokenRow.token, `${adId}?fields=status`, undefined, userId, {
+                                maxRetries: 2,
+                                retryDelay: 500
+                            });
+                            adStatusBefore = statusData.status || 'UNKNOWN';
+                        } catch (statusError: any) {
+                            console.error(`⚠️ [CALENDAR] Error checking ad status:`, statusError.message || statusError);
+                            // Si c'est une erreur de permissions, skip ce slot
+                            if (statusError.message?.includes('Permission denied') || statusError.message?.includes('does not have permission')) {
+                                console.error(`❌ [CALENDAR] Permission denied for ad ${adId}, skipping slot ${slot.id}`);
+                                continue;
                             }
-                        } catch (statusError) {
-                            console.error(`⚠️ [CALENDAR] Error checking ad status:`, statusError);
                         }
                         
                         console.log(`🔍 [CALENDAR] Current ad status: ${adStatusBefore}`);
@@ -1636,30 +1682,71 @@ async function executeCalendarSchedules(calendarSchedules: any[], now: Date) {
                         
                         console.log(`🔄 [CALENDAR] Executing STOP for ad ${adId}, slot ${slot.id}, time ${slot.stopMinutes}, CURRENT STATUS: ${adStatusBefore}`);
                         
-                        // Appeler Facebook API pour arrêter l'ad
-                        const response = await fetch(`https://graph.facebook.com/v18.0/${adId}?access_token=${tokenRow.token}`, {
-                            method: 'POST',
-                            headers: { 
-                                'Content-Type': 'application/json'
-                            },
-                            body: JSON.stringify({
-                                status: 'PAUSED'
-                            })
-                        });
+                        // Appeler Facebook API pour arrêter l'ad avec retry et gestion d'erreurs
+                        let responseData: any = {};
+                        let executionSuccess = false;
+                        try {
+                            const response = await axios.post(
+                                `https://graph.facebook.com/v18.0/${adId}`,
+                                { status: 'PAUSED' },
+                                {
+                                    headers: {
+                                        'Authorization': `Bearer ${tokenRow.token}`,
+                                        'Content-Type': 'application/json'
+                                    },
+                                    timeout: 30000
+                                }
+                            );
+                            responseData = response.data;
+                            executionSuccess = true;
+                        } catch (apiError: any) {
+                            const errorData = apiError.response?.data?.error || {};
+                            const errorCode = errorData.code;
+                            const errorMessage = errorData.message || apiError.message;
+                            
+                            // Gestion spécifique des erreurs de permissions (#10)
+                            if (errorCode === 10) {
+                                console.error(`❌ [CALENDAR] Permission denied for STOP action on ad ${adId}: ${errorMessage}`);
+                                await logCalendarScheduleExecution(
+                                    userId,
+                                    adId,
+                                    currentDateInTimezone,
+                                    slot.id,
+                                    slot.startMinutes,
+                                    slot.stopMinutes,
+                                    'STOP',
+                                    'ERROR',
+                                    now,
+                                    timezone,
+                                    `Permission denied: ${errorMessage}`,
+                                    errorData
+                                );
+                                continue; // Skip ce slot
+                            }
+                            
+                            // Gestion des rate limits
+                            if (errorCode === 17 || errorCode === 4 || apiError.response?.status === 429) {
+                                console.warn(`⚠️ [CALENDAR] Rate limit hit for STOP action on ad ${adId}, will retry later`);
+                                // Ne pas enregistrer comme erreur, le système retry automatiquement
+                                continue;
+                            }
+                            
+                            responseData = apiError.response?.data || {};
+                            console.error(`❌ [CALENDAR] Facebook API error for STOP: ad ${adId}, error:`, errorMessage);
+                        }
                         
-                        const responseData = await response.json().catch(() => ({}));
-                        
-                        if (response.ok) {
+                        if (executionSuccess) {
                             // Vérifier le statut de l'ad APRÈS l'exécution
                             let adStatusAfter = 'UNKNOWN';
                             try {
-                                const statusResponseAfter = await fetch(`https://graph.facebook.com/v18.0/${adId}?fields=status&access_token=${tokenRow.token}`);
-                                if (statusResponseAfter.ok) {
-                                    const statusDataAfter = await statusResponseAfter.json();
-                                    adStatusAfter = statusDataAfter.status || 'UNKNOWN';
-                                }
+                                const statusDataAfter = await fetchFbGraph(tokenRow.token, `${adId}?fields=status`, undefined, userId, {
+                                    maxRetries: 1,
+                                    retryDelay: 500
+                                });
+                                adStatusAfter = statusDataAfter.status || 'UNKNOWN';
                             } catch (statusError) {
-                                // Ignorer les erreurs
+                                // Ignorer les erreurs de vérification du statut
+                                console.warn(`⚠️ [CALENDAR] Could not verify ad status after STOP execution`);
                             }
                             
                             console.log(`✅ [CALENDAR] STOP executed for ad ${adId}, STATUS BEFORE: ${adStatusBefore}, STATUS AFTER: ${adStatusAfter}`);
