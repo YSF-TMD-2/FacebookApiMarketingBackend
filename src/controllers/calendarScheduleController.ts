@@ -65,12 +65,30 @@ async function getCalendarScheduleFromCacheOrDB(userId: string, adId: string): P
         return null;
     }
     
-    // Convertir vers CalendarScheduleData
+    // Convertir vers CalendarScheduleData et s'assurer que enabled est toujours défini pour chaque slot
+    const scheduleData = data.schedule_data || {};
+    const normalizedSchedules: { [date: string]: DaySchedule } = {};
+    
+    // Normaliser les schedules pour garantir que enabled est toujours défini
+    for (const [date, daySchedule] of Object.entries(scheduleData)) {
+        const day = daySchedule as DaySchedule;
+        if (day.timeSlots && Array.isArray(day.timeSlots)) {
+            normalizedSchedules[date] = {
+                timeSlots: day.timeSlots.map(slot => ({
+                    ...slot,
+                    enabled: slot.enabled !== undefined ? slot.enabled : true // Garantir que enabled est toujours défini
+                }))
+            };
+        } else {
+            normalizedSchedules[date] = day;
+        }
+    }
+    
     const calendarSchedule: CalendarScheduleData = {
         adId: data.ad_id,
         scheduleType: 'CALENDAR_SCHEDULE',
         timezone: data.timezone,
-        schedules: data.schedule_data || {},
+        schedules: normalizedSchedules,
         lastExecutedDate: data.last_executed_date || undefined,
         lastExecutedSlotId: data.last_executed_slot_id || undefined,
         lastExecutedAction: data.last_executed_action || undefined,
@@ -417,6 +435,7 @@ export async function updateCalendarSchedule(req: Request, res: Response) {
         const { schedules, timezone } = req.body;
         
         console.log(`📅 Updating calendar schedule for ad ${adId}`);
+        console.log(`📅 [UPDATE] Received schedules for dates:`, Object.keys(schedules || {}));
         
         // Charger le schedule existant
         const existing = await getCalendarScheduleFromCacheOrDB(userId, adId);
@@ -426,6 +445,24 @@ export async function updateCalendarSchedule(req: Request, res: Response) {
                 success: false,
                 message: "Calendar schedule not found. Use POST to create one."
             });
+        }
+        
+        console.log(`📅 [UPDATE] Existing schedule has dates:`, Object.keys(existing.schedules || {}));
+        // Log des slots existants pour chaque date modifiée
+        for (const date of Object.keys(schedules || {})) {
+            const existingDay = existing.schedules[date];
+            const newDay = schedules[date];
+            console.log(`📅 [UPDATE] Date ${date}: existing slots=${existingDay?.timeSlots?.length || 0}, new slots=${newDay?.timeSlots?.length || 0}`);
+            if (existingDay?.timeSlots) {
+                existingDay.timeSlots.forEach((slot: any, idx: number) => {
+                    console.log(`📅 [UPDATE] Existing slot ${idx}: id=${slot.id}, enabled=${slot.enabled}, start=${slot.startMinutes}, stop=${slot.stopMinutes}`);
+                });
+            }
+            if (newDay?.timeSlots) {
+                newDay.timeSlots.forEach((slot: any, idx: number) => {
+                    console.log(`📅 [UPDATE] New slot ${idx}: id=${slot.id}, enabled=${slot.enabled}, start=${slot.startMinutes}, stop=${slot.stopMinutes}`);
+                });
+            }
         }
         
         // Désactiver le schedule récurrent si présent (le schedule calendrier prend la priorité)
@@ -440,13 +477,11 @@ export async function updateCalendarSchedule(req: Request, res: Response) {
             // Ne pas faire échouer l'opération principale si la désactivation échoue
         }
         
-        // Merger les nouveaux schedules avec les existants
-        const mergedSchedules = {
-            ...existing.schedules,
-            ...schedules
-        };
+        // Merger les nouveaux schedules avec les existants AU NIVEAU DES SLOTS (pas des dates)
+        // Cela préserve les slots existants qui ne sont pas modifiés
+        const mergedSchedules = { ...existing.schedules };
         
-        // Valider les nouveaux schedules (même validation que create)
+        // Valider et merger les nouveaux schedules
         for (const [date, daySchedule] of Object.entries(schedules)) {
             if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
                 return res.status(400).json({
@@ -463,6 +498,12 @@ export async function updateCalendarSchedule(req: Request, res: Response) {
                 });
             }
             
+            // Récupérer les slots existants pour cette date (si elle existe)
+            const existingDaySchedule = mergedSchedules[date];
+            const existingSlots = existingDaySchedule?.timeSlots || [];
+            
+            // Valider et préparer les nouveaux slots
+            const validatedSlots: TimeSlot[] = [];
             for (const slot of day.timeSlots) {
                 if (slot.startMinutes < 0 || slot.startMinutes > 1439 ||
                     slot.stopMinutes < 0 || slot.stopMinutes > 1439 ||
@@ -473,14 +514,47 @@ export async function updateCalendarSchedule(req: Request, res: Response) {
                     });
                 }
                 
+                // Générer ID si manquant
                 if (!slot.id) {
                     slot.id = `${date}-${slot.startMinutes}-${slot.stopMinutes}-${Date.now()}`;
                 }
                 
+                // Préserver enabled si non défini (garder la valeur existante ou true par défaut)
                 if (slot.enabled === undefined) {
-                    slot.enabled = true;
+                    // Chercher le slot existant avec le même ID pour préserver son état enabled
+                    const existingSlot = existingSlots.find(s => s.id === slot.id);
+                    slot.enabled = existingSlot?.enabled !== undefined ? existingSlot.enabled : true;
+                }
+                
+                validatedSlots.push(slot);
+            }
+            
+            // MERGER les slots par ID : remplacer les slots existants avec le même ID, ajouter les nouveaux
+            const mergedSlots: TimeSlot[] = [...existingSlots];
+            
+            for (const newSlot of validatedSlots) {
+                const existingSlotIndex = mergedSlots.findIndex(s => s.id === newSlot.id);
+                if (existingSlotIndex >= 0) {
+                    // Slot existant : remplacer en préservant enabled si non fourni
+                    if (newSlot.enabled === undefined && mergedSlots[existingSlotIndex].enabled !== undefined) {
+                        newSlot.enabled = mergedSlots[existingSlotIndex].enabled;
+                    }
+                    mergedSlots[existingSlotIndex] = newSlot;
+                } else {
+                    // Nouveau slot : ajouter
+                    mergedSlots.push(newSlot);
                 }
             }
+            
+            // Mettre à jour la date avec les slots mergés
+            mergedSchedules[date] = {
+                timeSlots: mergedSlots
+            };
+            
+            console.log(`📅 [UPDATE] After merge for ${date}: ${mergedSlots.length} slots total`);
+            mergedSlots.forEach((slot: any, idx: number) => {
+                console.log(`📅 [UPDATE] Merged slot ${idx}: id=${slot.id}, enabled=${slot.enabled}, start=${slot.startMinutes}, stop=${slot.stopMinutes}`);
+            });
         }
         
         // Mettre à jour en DB (requête optimisée avec index)

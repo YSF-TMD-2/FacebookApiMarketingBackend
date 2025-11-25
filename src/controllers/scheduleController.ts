@@ -913,31 +913,34 @@ export async function executeSchedules() {
             await loadSchedulesFromDB();
         }
         
-        // Charger les calendar schedules actifs depuis la DB (optimisé avec index partiel)
-        // Seulement les schedules avec dates aujourd'hui ou futures (index idx_calendar_schedules_execution)
-        const currentDate = new Date().toISOString().split('T')[0];
-        const { data: activeCalendarSchedules, error: calendarError } = await supabase
+        // Charger TOUS les calendar schedules depuis la DB (on filtre ensuite par dates dans schedule_data)
+        // Note: first_date et last_date n'existent pas dans la table, on doit charger tous les schedules
+        const { data: fullCalendarSchedules, error: calendarError } = await supabase
             .from('calendar_schedules')
-            .select('user_id, ad_id')
-            .or(`first_date.is.null,first_date.lte.${currentDate},last_date.gte.${currentDate}`)
+            .select('*')
             .limit(1000); // Limite pour éviter de surcharger
         
         // Créer un Set des adIds qui ont des calendar schedules avec des slots actifs (pour bloquer les schedules récurrents)
         const adsWithCalendarSchedules = new Set<string>();
+        
+        // Filtrer les calendar schedules qui ont des dates aujourd'hui ou futures dans schedule_data
+        const currentDate = new Date().toISOString().split('T')[0];
+        const activeCalendarSchedules = fullCalendarSchedules?.filter((schedule: any) => {
+            const scheduleData = schedule.schedule_data || {};
+            // Vérifier si au moins une date dans schedule_data est >= aujourd'hui
+            const dates = Object.keys(scheduleData);
+            return dates.some(date => date >= currentDate);
+        }) || [];
+        
+        console.log(`📅 [EXECUTE] Found ${fullCalendarSchedules?.length || 0} total calendar schedules, ${activeCalendarSchedules.length} with dates >= ${currentDate}`);
+        
         if (activeCalendarSchedules && activeCalendarSchedules.length > 0) {
-            // Recharger les calendar schedules complets pour l'exécution et la vérification des slots
-            const { data: fullCalendarSchedules } = await supabase
-                .from('calendar_schedules')
-                .select('*')
-                .or(`first_date.is.null,first_date.lte.${currentDate},last_date.gte.${currentDate}`)
-                .limit(1000);
+            // Traiter les calendar schedules séparément (optimisé)
+            // Utiliser activeCalendarSchedules au lieu de fullCalendarSchedules pour ne traiter que ceux qui ont des dates pertinentes
+            await executeCalendarSchedules(activeCalendarSchedules, now);
             
-            if (fullCalendarSchedules && fullCalendarSchedules.length > 0) {
-                // Traiter les calendar schedules séparément (optimisé)
-                await executeCalendarSchedules(fullCalendarSchedules, now);
-                
-                // Vérifier si chaque calendar schedule a vraiment des slots actifs
-                for (const calendarSchedule of fullCalendarSchedules) {
+            // Vérifier si chaque calendar schedule a vraiment des slots actifs
+            for (const calendarSchedule of activeCalendarSchedules) {
                     const scheduleData = (calendarSchedule as any).schedule_data || {};
                     let hasActiveSlots = false;
                     
@@ -1401,10 +1404,14 @@ async function executeCalendarSchedules(calendarSchedules: any[], now: Date) {
                 const scheduleData = freshSchedule.schedule_data || {};
                 const daySchedule = scheduleData[currentDateInTimezone];
                 
+                console.log(`🔍 [CALENDAR] Checking ad ${adId} for date ${currentDateInTimezone}, available dates: ${Object.keys(scheduleData).join(', ')}`);
+                
                 if (!daySchedule || !daySchedule.timeSlots || daySchedule.timeSlots.length === 0) {
                     console.log(`⏭️ [CALENDAR] No schedule for today (${currentDateInTimezone}) for ad ${adId}`);
                     continue; // Pas de schedule pour aujourd'hui
                 }
+                
+                console.log(`✅ [CALENDAR] Found ${daySchedule.timeSlots.length} slot(s) for today for ad ${adId}`);
                 
                 
                 // Vérifier chaque slot pour voir si on doit exécuter une action
@@ -1825,12 +1832,12 @@ export async function startScheduleService() {
     // Charger les schedules depuis la base de données au démarrage
     await loadSchedulesFromDB();
     
-    console.log('🚀 Schedule service started - checking every 5 seconds');
+    console.log('🚀 Schedule service started - checking every 1 minute');
     
-    // Exécuter toutes les 5 secondes pour les tests (changer à 60000 pour la production)
+    // Exécuter toutes les minutes (60000ms = 1 minute)
     setInterval(() => {
         executeSchedules();
-    }, 5000); // 5 secondes pour les tests
+    }, 60000); // 1 minute
     
     // Nettoyer les schedules des tokens expirés toutes les 5 minutes
     setInterval(() => {
