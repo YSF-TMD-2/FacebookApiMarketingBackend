@@ -279,6 +279,45 @@ function formatDate(dateString: string): string {
     });
 }
 
+// Fonction de validation des slots pour un jour
+// Vérifie:
+// 1. Maximum 2 slots par jour
+// 2. Minimum 1 heure (60 minutes) entre chaque stop et le start suivant
+function validateDaySlots(date: string, timeSlots: TimeSlot[]): { valid: boolean; message?: string } {
+    // Vérifier le nombre maximum de slots (2 maximum)
+    if (timeSlots.length > 2) {
+        return {
+            valid: false,
+            message: `Maximum 2 time slots allowed per day. You have ${timeSlots.length} slots for date ${date}.`
+        };
+    }
+    
+    // Si aucun slot ou un seul slot, c'est valide
+    if (timeSlots.length <= 1) {
+        return { valid: true };
+    }
+    
+    // Trier les slots par startMinutes pour faciliter la vérification
+    const sortedSlots = [...timeSlots].sort((a, b) => a.startMinutes - b.startMinutes);
+    
+    // Vérifier qu'il y a au moins 1 heure (60 minutes) entre le stop du premier slot et le start du second
+    const firstSlot = sortedSlots[0];
+    const secondSlot = sortedSlots[1];
+    
+    // Calculer la différence entre le stop du premier slot et le start du second
+    const timeDiff = secondSlot.startMinutes - firstSlot.stopMinutes;
+    
+    // Vérifier qu'il y a au moins 60 minutes entre le stop et le start suivant
+    if (timeDiff < 60) {
+        return {
+            valid: false,
+            message: `There must be at least 1 hour (60 minutes) between the end of one slot and the start of the next. For date ${date}, the gap between the first slot (ends at ${formatMinutesToTime(firstSlot.stopMinutes)}) and the second slot (starts at ${formatMinutesToTime(secondSlot.startMinutes)}) is only ${timeDiff} minutes. Please ensure the first slot ends at least 1 hour before the second slot starts.`
+        };
+    }
+    
+    return { valid: true };
+}
+
 // POST /api/schedules/calendar/:adId - Créer un schedule calendrier (optimisé avec UPSERT)
 export async function createCalendarSchedule(req: Request, res: Response) {
     try {
@@ -331,6 +370,15 @@ export async function createCalendarSchedule(req: Request, res: Response) {
                     });
                 }
                 
+                // Vérifier que la durée du slot est d'au moins 1 heure (60 minutes)
+                const slotDuration = slot.stopMinutes - slot.startMinutes;
+                if (slotDuration < 60) {
+                    return res.status(400).json({
+                        success: false,
+                        message: `Invalid time slot for date ${date}: Each time slot must have a minimum duration of 1 hour (60 minutes). The slot from ${formatMinutesToTime(slot.startMinutes)} to ${formatMinutesToTime(slot.stopMinutes)} is only ${slotDuration} minutes.`
+                    });
+                }
+                
                 // Générer ID si manquant
                 if (!slot.id) {
                     slot.id = `${date}-${slot.startMinutes}-${slot.stopMinutes}-${Date.now()}`;
@@ -340,6 +388,15 @@ export async function createCalendarSchedule(req: Request, res: Response) {
                 if (slot.enabled === undefined) {
                     slot.enabled = true;
                 }
+            }
+            
+            // Valider les règles de slots (max 2 par jour, min 1h entre activation/stop)
+            const validation = validateDaySlots(date, day.timeSlots);
+            if (!validation.valid) {
+                return res.status(400).json({
+                    success: false,
+                    message: validation.message
+                });
             }
         }
         
@@ -514,6 +571,15 @@ export async function updateCalendarSchedule(req: Request, res: Response) {
                     });
                 }
                 
+                // Vérifier que la durée du slot est d'au moins 1 heure (60 minutes)
+                const slotDuration = slot.stopMinutes - slot.startMinutes;
+                if (slotDuration < 60) {
+                    return res.status(400).json({
+                        success: false,
+                        message: `Invalid time slot for date ${date}: Each time slot must have a minimum duration of 1 hour (60 minutes). The slot from ${formatMinutesToTime(slot.startMinutes)} to ${formatMinutesToTime(slot.stopMinutes)} is only ${slotDuration} minutes.`
+                    });
+                }
+                
                 // Générer ID si manquant
                 if (!slot.id) {
                     slot.id = `${date}-${slot.startMinutes}-${slot.stopMinutes}-${Date.now()}`;
@@ -550,6 +616,15 @@ export async function updateCalendarSchedule(req: Request, res: Response) {
             mergedSchedules[date] = {
                 timeSlots: mergedSlots
             };
+            
+            // Valider les règles de slots après le merge (max 2 par jour, min 1h entre activation/stop)
+            const validation = validateDaySlots(date, mergedSlots);
+            if (!validation.valid) {
+                return res.status(400).json({
+                    success: false,
+                    message: validation.message
+                });
+            }
             
             console.log(`📅 [UPDATE] After merge for ${date}: ${mergedSlots.length} slots total`);
             mergedSlots.forEach((slot: any, idx: number) => {
