@@ -240,6 +240,37 @@ export class StopLossSettingsService {
   }
 
   /**
+   * Supprimer définitivement un stop loss pour une annonce
+   * Supprime réellement l'enregistrement de la base de données
+   */
+  static async deleteStopLoss(
+    userId: string,
+    adId: string
+  ): Promise<{ success: boolean; error?: string }> {
+    try {
+      console.log(`🗑️ Deleting stop loss for ad ${adId} (user: ${userId})`);
+
+      // Supprimer toutes les configurations pour cet ad_id et cet utilisateur
+      const { error } = await supabase
+        .from('stop_loss_settings')
+        .delete()
+        .eq('user_id', userId)
+        .eq('ad_id', adId);
+
+      if (error) throw error;
+
+      console.log(`✅ Stop loss deleted for ad ${adId}`);
+      return { success: true };
+    } catch (error) {
+      console.error('❌ Error deleting stop loss:', error);
+      return { 
+        success: false, 
+        error: error instanceof Error ? error.message : 'Unknown error' 
+      };
+    }
+  }
+
+  /**
    * Obtenir l'état du stop loss pour une annonce
    * Retourne la configuration active la plus récente, ou la plus récente si aucune n'est active
    */

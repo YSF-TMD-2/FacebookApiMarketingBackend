@@ -318,8 +318,8 @@ export async function deleteMyStopLoss(req: Request, res: Response) {
       });
     }
 
-    // Utiliser le service pour supprimer le stop-loss
-    const result = await StopLossSettingsService.disableStopLoss(userId, adId);
+    // Utiliser le service pour supprimer définitivement le stop-loss
+    const result = await StopLossSettingsService.deleteStopLoss(userId, adId);
 
     if (!result.success) {
       return res.status(500).json({

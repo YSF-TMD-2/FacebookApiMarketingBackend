@@ -1830,12 +1830,12 @@ async function executeCalendarSchedules(calendarSchedules: any[], now: Date) {
 
 // Démarrer le service de schedules (appelé toutes les minutes)
 export async function startScheduleService() {
-    console.log('🚀 Starting schedule service...');
+    console.log('Starting schedule service...');
     
     // Charger les schedules depuis la base de données au démarrage
     await loadSchedulesFromDB();
     
-    console.log('🚀 Schedule service started - checking every 1 minute');
+    console.log(' Schedule service started - checking every 1 minute');
     
     // Exécuter toutes les minutes (60000ms = 1 minute)
     setInterval(() => {

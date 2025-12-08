@@ -749,7 +749,6 @@ app.get("/api/facebook/adaccounts-simple", async (req, res) => {
       const adAccountsResponse = await fetch(`https://graph.facebook.com/v18.0/me/adaccounts?access_token=${tokenRow.token}&fields=id,name,account_id,currency,timezone_name,business_name,business_id,created_time,amount_spent,balance,spend_cap,account_status,disable_reason`);
       const adAccountsData = await adAccountsResponse.json();
       if (adAccountsData.error) {
-        console.error('❌ Facebook API error:', adAccountsData.error);
         return res.status(400).json({ 
           message: "Facebook API error: " + adAccountsData.error.message, 
           success: false 
@@ -767,7 +766,6 @@ app.get("/api/facebook/adaccounts-simple", async (req, res) => {
       });
 
     } catch (error) {
-      console.error('❌ Error fetching ad accounts:', error);
       return res.status(500).json({ 
         message: "Error fetching ad accounts", 
         success: false 
@@ -775,7 +773,6 @@ app.get("/api/facebook/adaccounts-simple", async (req, res) => {
     }
 
   } catch (error) {
-    console.error('Error in /api/facebook/adaccounts-simple:', error);
     res.status(500).json({ 
       message: "Internal server error", 
       error: error.message, 
@@ -888,7 +885,6 @@ app.get("/api/facebook/adaccounts-detailed", async (req, res) => {
       });
 
     } catch (error) {
-      console.error('❌ Error fetching detailed ad accounts:', error);
       return res.status(500).json({ 
         message: "Error fetching detailed ad accounts", 
         success: false 
@@ -896,7 +892,6 @@ app.get("/api/facebook/adaccounts-detailed", async (req, res) => {
     }
 
   } catch (error) {
-    console.error('Error in /api/facebook/adaccounts-detailed:', error);
     res.status(500).json({ 
       message: "Internal server error", 
       error: error.message, 
@@ -1002,13 +997,11 @@ app.get("/api/facebook/analytics", async (req, res) => {
           }
         }
       } catch (error) {
-        console.error('❌ Error fetching ad accounts:', error);
         adAccountsData = { data: [] };
       }
       
       // Vérifier s'il y a une erreur dans la réponse
       if (adAccountsData.error) {
-        console.error('❌ Facebook API error for ad accounts:', adAccountsData.error);
         // Continuer avec des données vides plutôt que d'échouer
         adAccountsData.data = [];
       }
@@ -1029,13 +1022,11 @@ app.get("/api/facebook/analytics", async (req, res) => {
           }
         }
       } catch (error) {
-        console.error('❌ Error fetching pages:', error);
         pagesData = { data: [] };
       }
       
       // Vérifier s'il y a une erreur dans la réponse
       if (pagesData.error) {
-        console.error('❌ Facebook API error for pages:', pagesData.error);
         pagesData.data = [];
       }
       
@@ -1471,7 +1462,6 @@ app.get("/api/facebook/business/:businessId/adaccounts", async (req, res) => {
       const payload = JSON.parse(Buffer.from(token.split('.')[1], 'base64').toString());
       userId = payload.sub;
     } catch (error) {
-      console.error('❌ Error decoding JWT:', error);
       return res.status(401).json({ message: "Invalid token", success: false });
     }
 
@@ -1503,7 +1493,6 @@ app.get("/api/facebook/business/:businessId/adaccounts", async (req, res) => {
         const allAdAccountsData = await allAdAccountsResponse.json();
         
         if (allAdAccountsData.error) {
-          console.error('❌ Facebook API error for all ad accounts:', allAdAccountsData.error);
           return res.status(400).json({
             success: false,
             message: `Facebook API error: ${allAdAccountsData.error.message}`,
@@ -1527,7 +1516,6 @@ app.get("/api/facebook/business/:businessId/adaccounts", async (req, res) => {
         });
         
       } catch (error) {
-        console.error('❌ Error fetching ad accounts for extracted business:', error);
         return res.status(500).json({
           success: false,
           message: "Error fetching ad accounts for extracted business",
@@ -1544,7 +1532,6 @@ app.get("/api/facebook/business/:businessId/adaccounts", async (req, res) => {
       const adAccountsData = await adAccountsResponse.json();
       
       if (adAccountsData.error) {
-        console.error('❌ Facebook API error for ad accounts:', adAccountsData.error);
         return res.status(400).json({
           success: false,
           message: `Facebook API error: ${adAccountsData.error.message}`,
@@ -1576,7 +1563,6 @@ app.get("/api/facebook/business/:businessId/adaccounts", async (req, res) => {
               analytics = insightsData.data[0];
             } else if (insightsData.error && insightsData.error.code === 4) {
               // Rate limit - on retourne des données vides mais on continue
-              console.warn('⚠️ Rate limit for account:', account.account_id);
             }
 
             // Ajouter des valeurs par défaut et des calculs alternatifs
@@ -1617,8 +1603,6 @@ app.get("/api/facebook/business/:businessId/adaccounts", async (req, res) => {
               analytics: finalAnalytics
             };
           } catch (error) {
-            console.warn('⚠️ Error fetching analytics for account:', account.account_id, error);
-            
             // Fournir des valeurs par défaut même en cas d'erreur
             const spend = parseFloat(account.amount_spent || 0);
             const defaultAnalytics = {
@@ -1649,7 +1633,6 @@ app.get("/api/facebook/business/:businessId/adaccounts", async (req, res) => {
         message: "Ad accounts with analytics retrieved successfully"
       });
     } catch (error) {
-      console.error('❌ Error fetching ad accounts:', error);
       return res.status(500).json({
         success: false,
         message: "Failed to fetch ad accounts",
@@ -1657,7 +1640,6 @@ app.get("/api/facebook/business/:businessId/adaccounts", async (req, res) => {
       });
     }
   } catch (error) {
-    console.error('❌ Error in business ad accounts endpoint:', error);
     res.status(500).json({ 
       message: "Internal server error", 
       success: false 
@@ -1747,13 +1729,11 @@ app.get("/api/facebook/detailed-adaccounts", async (req, res) => {
           }
         }
       } catch (error) {
-        console.error('❌ Error fetching ad accounts:', error);
         adAccountsData = { data: [] };
       }
       
       // Vérifier s'il y a une erreur dans la réponse
       if (adAccountsData.error) {
-        console.error('❌ Facebook API error for ad accounts:', adAccountsData.error);
         adAccountsData.data = [];
       }
 
@@ -1804,7 +1784,6 @@ app.get("/api/facebook/detailed-adaccounts", async (req, res) => {
       });
 
     } catch (error) {
-      console.error('❌ Error fetching detailed ad accounts:', error);
       return res.status(500).json({ 
         message: "Error fetching detailed ad accounts", 
         success: false,
@@ -1813,7 +1792,6 @@ app.get("/api/facebook/detailed-adaccounts", async (req, res) => {
     }
 
   } catch (error) {
-    console.error('❌ Error in detailed ad accounts endpoint:', error);
     return res.status(500).json({ 
       message: "Server error", 
       success: false,

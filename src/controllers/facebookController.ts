@@ -1070,9 +1070,11 @@ export async function updateAdStatus(req: Request, res: Response) {
             
             // Normaliser le statut comme dans getAdDetails (uniquement basé sur le statut de l'ad)
             const normalizedStatus = normalizeAdStatus(verifyResponse.status);
+            const effectiveStatus = verifyResponse.effective_status || verifyResponse.status;
             
             console.log(`✅ Verified ad status after update:`, {
                 status_from_facebook: verifyResponse.status,
+                effective_status: effectiveStatus,
                 normalized_status: normalizedStatus
             });
             
@@ -1080,7 +1082,7 @@ export async function updateAdStatus(req: Request, res: Response) {
                 adId, 
                 requested_status: status,
                 actual_status: verifyResponse.status,
-                effective_status: realStatus,
+                effective_status: effectiveStatus,
                 normalized_status: normalizedStatus,
                 response: response.data 
             });
@@ -1091,7 +1093,7 @@ export async function updateAdStatus(req: Request, res: Response) {
                 data: {
                     ...response.data,
                     status: normalizedStatus,
-                    effective_status: realStatus
+                    effective_status: effectiveStatus
                 }
             });
         } catch (verifyError: any) {
@@ -1116,6 +1118,21 @@ export async function updateAdStatus(req: Request, res: Response) {
             data: error.response?.data,
             stack: error.stack
         });
+        
+        // Si c'est une erreur 400 de Facebook, extraire le message utilisateur
+        if (error.response?.status === 400 && error.response?.data?.error) {
+            const fbError = error.response.data.error;
+            const userMessage = fbError.error_user_msg || fbError.message || "Invalid request to Facebook API";
+            
+            return res.status(400).json({ 
+                success: false,
+                message: userMessage,
+                errorCode: fbError.code,
+                errorSubcode: fbError.error_subcode,
+                errorTitle: fbError.error_user_title,
+                details: error.response.data
+            });
+        }
         
         return res.status(500).json({ 
             success: false,
