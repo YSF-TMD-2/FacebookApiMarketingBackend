@@ -9,11 +9,22 @@ import { getFacebookToken, fetchFbGraph } from './facebookController.js';
 
 // Fonction pour obtenir le client Supabase Admin (avec service_role_key)
 function getSupabaseAdminClient() {
-  const url = process.env.SUPABASE_URL || 'https://qjakxxkgtfdsjglwisbf.supabase.co';
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY || '';
+  // ⚠️ IMPORTANT: Utilise UNIQUEMENT les variables d'environnement, pas de valeurs par défaut
+  const url = process.env.SUPABASE_URL;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY;
+  
+  if (!url) {
+    throw new Error(
+      '❌ SUPABASE_URL environment variable is required. ' +
+      'Please set it in your .env file or Vercel environment variables.'
+    );
+  }
   
   if (!key) {
-    throw new Error('SUPABASE_SERVICE_ROLE_KEY or SUPABASE_ANON_KEY is required for admin operations');
+    throw new Error(
+      '❌ SUPABASE_SERVICE_ROLE_KEY or SUPABASE_ANON_KEY is required for admin operations. ' +
+      'Please set it in your .env file or Vercel environment variables.'
+    );
   }
   
   return createClient(url, key, {
@@ -849,18 +860,36 @@ export async function resetUserPassword(req: ExpressRequest, res: Response) {
 
     // Méthode 1 : Utiliser l'API REST Supabase pour envoyer l'email de réinitialisation
     // Cette méthode ENVOIE RÉELLEMENT l'email (contrairement à generateLink qui peut juste générer le lien)
-    const supabaseUrl = process.env.SUPABASE_URL || 'https://qjakxxkgtfdsjglwisbf.supabase.co';
+    // ⚠️ IMPORTANT: Utilise UNIQUEMENT les variables d'environnement, pas de valeurs par défaut
+    const supabaseUrl = process.env.SUPABASE_URL;
     const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+    
+    if (!supabaseUrl) {
+      console.error('❌ SUPABASE_URL is missing');
+      return res.status(500).json({
+        success: false,
+        message: 'Server configuration error: SUPABASE_URL is not set. Please set it in your .env file or Vercel environment variables.'
+      });
+    }
     
     if (!supabaseServiceKey) {
       console.error('❌ SUPABASE_SERVICE_ROLE_KEY is missing');
       return res.status(500).json({
         success: false,
-        message: 'Server configuration error: SUPABASE_SERVICE_ROLE_KEY is not set'
+        message: 'Server configuration error: SUPABASE_SERVICE_ROLE_KEY is not set. Please set it in your .env file or Vercel environment variables.'
       });
     }
 
-    const redirectTo = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/auth/reset-password`;
+    const frontendUrl = process.env.FRONTEND_URL;
+    if (!frontendUrl) {
+      console.error('❌ FRONTEND_URL is missing');
+      return res.status(500).json({
+        success: false,
+        message: 'Server configuration error: FRONTEND_URL is not set. Please set it in your .env file or Vercel environment variables.'
+      });
+    }
+
+    const redirectTo = `${frontendUrl}/auth/reset-password`;
     
     console.log(`📧 [ADMIN] Sending password reset email to ${userEmail} via Supabase REST API`);
     

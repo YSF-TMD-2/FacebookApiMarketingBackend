@@ -1,8 +1,24 @@
 import { createClient } from '@supabase/supabase-js';
 
 // Configuration Supabase optimisée pour le backend
-const supabaseUrl = process.env.SUPABASE_URL || 'https://qjakxxkgtfdsjglwisbf.supabase.co';
-const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFqYWt4eGtndGZkc2pnbHdpc2JmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTk5ODYwNTcsImV4cCI6MjA3NTU2MjA1N30.r_1Kgepi8fkzKAIz44m1ND4R1iTtPL-Lw3TiLvkUzh8';
+// ⚠️ IMPORTANT: Utilise UNIQUEMENT les variables d'environnement, pas de valeurs par défaut
+const supabaseUrl = process.env.SUPABASE_URL;
+const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY;
+
+// Vérification que les variables d'environnement sont définies
+if (!supabaseUrl) {
+  throw new Error(
+    '❌ SUPABASE_URL environment variable is required. ' +
+    'Please set it in your .env file or Vercel environment variables.'
+  );
+}
+
+if (!supabaseKey) {
+  throw new Error(
+    '❌ SUPABASE_SERVICE_ROLE_KEY or SUPABASE_ANON_KEY environment variable is required. ' +
+    'Please set it in your .env file or Vercel environment variables.'
+  );
+}
 
 // Types pour la base de données
 export interface Database {
