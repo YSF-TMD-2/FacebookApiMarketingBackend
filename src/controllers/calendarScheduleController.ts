@@ -38,12 +38,12 @@ async function getCalendarScheduleFromCacheOrDB(userId: string, adId: string): P
     const cacheKey = getCacheKey(userId, adId);
     const cached = calendarSchedulesCache.get(cacheKey);
     const cacheTimestamp = calendarCacheTimestamps.get(cacheKey);
-    
+
     // Vérifier si le cache est valide
     if (cached && cacheTimestamp && Date.now() - cacheTimestamp < CALENDAR_CACHE_TTL) {
         return cached;
     }
-    
+
     // Charger depuis la DB avec requête optimisée (index sur user_id, ad_id)
     const { data, error } = await supabase
         .from('calendar_schedules')
@@ -51,7 +51,7 @@ async function getCalendarScheduleFromCacheOrDB(userId: string, adId: string): P
         .eq('user_id', userId)
         .eq('ad_id', adId)
         .single();
-    
+
     if (error) {
         if (error.code === 'PGRST116') {
             // Pas de schedule trouvé
@@ -60,15 +60,15 @@ async function getCalendarScheduleFromCacheOrDB(userId: string, adId: string): P
         console.error('❌ Error loading calendar schedule from DB:', error);
         return null;
     }
-    
+
     if (!data) {
         return null;
     }
-    
+
     // Convertir vers CalendarScheduleData et s'assurer que enabled est toujours défini pour chaque slot
     const scheduleData = data.schedule_data || {};
     const normalizedSchedules: { [date: string]: DaySchedule } = {};
-    
+
     // Normaliser les schedules pour garantir que enabled est toujours défini
     for (const [date, daySchedule] of Object.entries(scheduleData)) {
         const day = daySchedule as DaySchedule;
@@ -83,7 +83,7 @@ async function getCalendarScheduleFromCacheOrDB(userId: string, adId: string): P
             normalizedSchedules[date] = day;
         }
     }
-    
+
     const calendarSchedule: CalendarScheduleData = {
         adId: data.ad_id,
         scheduleType: 'CALENDAR_SCHEDULE',
@@ -95,11 +95,11 @@ async function getCalendarScheduleFromCacheOrDB(userId: string, adId: string): P
         createdAt: data.created_at,
         updatedAt: data.updated_at
     };
-    
+
     // Mettre en cache
     calendarSchedulesCache.set(cacheKey, calendarSchedule);
     calendarCacheTimestamps.set(cacheKey, Date.now());
-    
+
     return calendarSchedule;
 }
 
@@ -115,11 +115,11 @@ export async function getCalendarSchedule(req: Request, res: Response) {
     try {
         const userId = req.user!.id;
         const { adId } = req.params;
-        
-        
+
+
         // Utiliser le cache pour éviter les requêtes DB fréquentes
         const calendarSchedule = await getCalendarScheduleFromCacheOrDB(userId, adId);
-        
+
         if (!calendarSchedule) {
             return res.json({
                 success: true,
@@ -127,13 +127,13 @@ export async function getCalendarSchedule(req: Request, res: Response) {
                 message: "No calendar schedule found for this ad"
             });
         }
-        
+
         return res.json({
             success: true,
             data: calendarSchedule,
             cached: calendarCacheTimestamps.has(getCacheKey(userId, adId))
         });
-        
+
     } catch (error: any) {
         console.error('❌ Error getting calendar schedule:', error);
         return res.status(500).json({
@@ -148,9 +148,9 @@ export async function getAllCalendarSchedules(req: Request, res: Response) {
     try {
         const userId = req.user!.id;
         const { adId } = req.params;
-        
+
         console.log(`📅 Getting all calendar schedules for ad ${adId}`);
-        
+
         // Charger le schedule depuis la DB
         const { data, error } = await supabase
             .from('calendar_schedules')
@@ -158,7 +158,7 @@ export async function getAllCalendarSchedules(req: Request, res: Response) {
             .eq('user_id', userId)
             .eq('ad_id', adId)
             .single();
-        
+
         if (error) {
             if (error.code === 'PGRST116') {
                 return res.json({
@@ -173,7 +173,7 @@ export async function getAllCalendarSchedules(req: Request, res: Response) {
                 message: error.message || "Error loading calendar schedules"
             });
         }
-        
+
         if (!data || !data.schedule_data) {
             return res.json({
                 success: true,
@@ -181,23 +181,23 @@ export async function getAllCalendarSchedules(req: Request, res: Response) {
                 message: "No schedules configured"
             });
         }
-        
+
         const scheduleData = data.schedule_data as { [date: string]: DaySchedule };
         const timezone = data.timezone || 'UTC';
         const now = new Date();
         const today = getCurrentDateInTimezone(timezone);
-        
+
         // Convertir toutes les dates en format lisible avec leur état
         const allSchedules = Object.entries(scheduleData).map(([date, daySchedule]) => {
             const scheduleDate = new Date(date + 'T00:00:00');
             const isPast = scheduleDate < new Date(today + 'T00:00:00');
             const isToday = date === today;
-            
+
             // Déterminer l'état de chaque slot
             const slotsWithStatus = daySchedule.timeSlots.map(slot => {
                 const currentMinutes = getCurrentMinutesInTimezone(timezone);
                 let status: 'completed' | 'active' | 'upcoming' | 'past' = 'past';
-                
+
                 if (isToday) {
                     // Si c'est aujourd'hui, vérifier l'état du slot
                     if (currentMinutes >= slot.startMinutes && currentMinutes < slot.stopMinutes) {
@@ -212,7 +212,7 @@ export async function getAllCalendarSchedules(req: Request, res: Response) {
                 } else {
                     status = 'upcoming';
                 }
-                
+
                 return {
                     ...slot,
                     status,
@@ -220,7 +220,7 @@ export async function getAllCalendarSchedules(req: Request, res: Response) {
                     stopTime: formatMinutesToTime(slot.stopMinutes)
                 };
             });
-            
+
             return {
                 date,
                 dateFormatted: formatDate(date),
@@ -231,14 +231,14 @@ export async function getAllCalendarSchedules(req: Request, res: Response) {
                 totalSlots: daySchedule.timeSlots.length
             };
         });
-        
+
         // Trier par date (plus récent en premier)
         allSchedules.sort((a, b) => {
             const dateA = new Date(a.date + 'T00:00:00');
             const dateB = new Date(b.date + 'T00:00:00');
             return dateB.getTime() - dateA.getTime();
         });
-        
+
         return res.json({
             success: true,
             data: {
@@ -249,7 +249,7 @@ export async function getAllCalendarSchedules(req: Request, res: Response) {
                 timezone
             }
         });
-        
+
     } catch (error: any) {
         console.error('❌ Error getting all calendar schedules:', error);
         return res.status(500).json({
@@ -271,11 +271,11 @@ function formatMinutesToTime(minutes: number): string {
 // Fonction helper pour formater la date
 function formatDate(dateString: string): string {
     const date = new Date(dateString + 'T00:00:00');
-    return date.toLocaleDateString('en-US', { 
-        weekday: 'short', 
-        day: 'numeric', 
-        month: 'short', 
-        year: 'numeric' 
+    return date.toLocaleDateString('en-US', {
+        weekday: 'short',
+        day: 'numeric',
+        month: 'short',
+        year: 'numeric'
     });
 }
 
@@ -291,22 +291,22 @@ function validateDaySlots(date: string, timeSlots: TimeSlot[]): { valid: boolean
             message: `Maximum 2 time slots allowed per day. You have ${timeSlots.length} slots for date ${date}.`
         };
     }
-    
+
     // Si aucun slot ou un seul slot, c'est valide
     if (timeSlots.length <= 1) {
         return { valid: true };
     }
-    
+
     // Trier les slots par startMinutes pour faciliter la vérification
     const sortedSlots = [...timeSlots].sort((a, b) => a.startMinutes - b.startMinutes);
-    
+
     // Vérifier qu'il y a au moins 1 heure (60 minutes) entre le stop du premier slot et le start du second
     const firstSlot = sortedSlots[0];
     const secondSlot = sortedSlots[1];
-    
+
     // Calculer la différence entre le stop du premier slot et le start du second
     const timeDiff = secondSlot.startMinutes - firstSlot.stopMinutes;
-    
+
     // Vérifier qu'il y a au moins 60 minutes entre le stop et le start suivant
     if (timeDiff < 60) {
         return {
@@ -314,7 +314,7 @@ function validateDaySlots(date: string, timeSlots: TimeSlot[]): { valid: boolean
             message: `There must be at least 1 hour (60 minutes) between the end of one slot and the start of the next. For date ${date}, the gap between the first slot (ends at ${formatMinutesToTime(firstSlot.stopMinutes)}) and the second slot (starts at ${formatMinutesToTime(secondSlot.startMinutes)}) is only ${timeDiff} minutes. Please ensure the first slot ends at least 1 hour before the second slot starts.`
         };
     }
-    
+
     return { valid: true };
 }
 
@@ -324,9 +324,9 @@ export async function createCalendarSchedule(req: Request, res: Response) {
         const userId = req.user!.id;
         const { adId } = req.params;
         const { timezone, schedules } = req.body;
-        
+
         console.log(`📅 Creating calendar schedule for ad ${adId}`);
-        
+
         // Validation
         if (!timezone || !schedules || typeof schedules !== 'object') {
             return res.status(400).json({
@@ -334,7 +334,7 @@ export async function createCalendarSchedule(req: Request, res: Response) {
                 message: "Missing required parameters: timezone, schedules"
             });
         }
-        
+
         // Valider la structure des schedules
         for (const [date, daySchedule] of Object.entries(schedules)) {
             // Valider format de date (YYYY-MM-DD)
@@ -344,7 +344,7 @@ export async function createCalendarSchedule(req: Request, res: Response) {
                     message: `Invalid date format: ${date}. Expected YYYY-MM-DD`
                 });
             }
-            
+
             const day = daySchedule as DaySchedule;
             if (!day.timeSlots || !Array.isArray(day.timeSlots)) {
                 return res.status(400).json({
@@ -352,7 +352,7 @@ export async function createCalendarSchedule(req: Request, res: Response) {
                     message: `Invalid timeSlots for date ${date}`
                 });
             }
-            
+
             // Valider chaque slot
             for (const slot of day.timeSlots) {
                 if (slot.startMinutes < 0 || slot.startMinutes > 1439 ||
@@ -362,14 +362,14 @@ export async function createCalendarSchedule(req: Request, res: Response) {
                         message: `Invalid time slot for date ${date}: minutes must be between 0-1439`
                     });
                 }
-                
+
                 if (slot.startMinutes >= slot.stopMinutes) {
                     return res.status(400).json({
                         success: false,
                         message: `Invalid time slot for date ${date}: startMinutes must be less than stopMinutes`
                     });
                 }
-                
+
                 // Vérifier que la durée du slot est d'au moins 1 heure (60 minutes)
                 const slotDuration = slot.stopMinutes - slot.startMinutes;
                 if (slotDuration < 60) {
@@ -378,18 +378,18 @@ export async function createCalendarSchedule(req: Request, res: Response) {
                         message: `Invalid time slot for date ${date}: Each time slot must have a minimum duration of 1 hour (60 minutes). The slot from ${formatMinutesToTime(slot.startMinutes)} to ${formatMinutesToTime(slot.stopMinutes)} is only ${slotDuration} minutes.`
                     });
                 }
-                
+
                 // Générer ID si manquant
                 if (!slot.id) {
                     slot.id = `${date}-${slot.startMinutes}-${slot.stopMinutes}-${Date.now()}`;
                 }
-                
+
                 // Définir enabled par défaut
                 if (slot.enabled === undefined) {
                     slot.enabled = true;
                 }
             }
-            
+
             // Valider les règles de slots (max 2 par jour, min 1h entre activation/stop)
             const validation = validateDaySlots(date, day.timeSlots);
             if (!validation.valid) {
@@ -399,7 +399,7 @@ export async function createCalendarSchedule(req: Request, res: Response) {
                 });
             }
         }
-        
+
         // Vérifier le token Facebook
         const tokenRow = await getFacebookToken(userId);
         if (!tokenRow || !tokenRow.token) {
@@ -408,7 +408,7 @@ export async function createCalendarSchedule(req: Request, res: Response) {
                 message: "No Facebook token found. Please reconnect your Facebook account."
             });
         }
-        
+
         // Désactiver le schedule récurrent si présent (le schedule calendrier prend la priorité)
         try {
             await disableRecurringScheduleForAd(userId, adId);
@@ -420,7 +420,7 @@ export async function createCalendarSchedule(req: Request, res: Response) {
             console.error('⚠️ Error disabling recurring schedule:', deleteError);
             // Ne pas faire échouer l'opération principale si la désactivation échoue
         }
-        
+
         // Utiliser UPSERT pour éviter les conflits (optimisé)
         const { data, error } = await supabase
             .from('calendar_schedules')
@@ -436,7 +436,7 @@ export async function createCalendarSchedule(req: Request, res: Response) {
             })
             .select()
             .single();
-        
+
         if (error) {
             console.error('❌ Error creating calendar schedule:', error);
             return res.status(500).json({
@@ -445,17 +445,17 @@ export async function createCalendarSchedule(req: Request, res: Response) {
                 error: error.message
             });
         }
-        
+
         // Invalider le cache
         invalidateCalendarCache(userId, adId);
-        
+
         // Log (utiliser try-catch pour ne pas faire échouer l'opération principale)
         try {
             await createLog(userId, "CALENDAR_SCHEDULE_CREATE", {
                 adId,
                 timezone,
                 totalDays: Object.keys(schedules).length,
-                totalSlots: Object.values(schedules).reduce((sum: number, day: any) => 
+                totalSlots: Object.values(schedules).reduce((sum: number, day: any) =>
                     sum + (day.timeSlots?.length || 0), 0
                 )
             });
@@ -463,7 +463,7 @@ export async function createCalendarSchedule(req: Request, res: Response) {
             // Ignorer les erreurs de logging pour ne pas faire échouer l'opération principale
             console.error('⚠️ Error creating log (non-blocking):', logError);
         }
-        
+
         return res.json({
             success: true,
             message: "Calendar schedule created successfully",
@@ -474,7 +474,7 @@ export async function createCalendarSchedule(req: Request, res: Response) {
                 totalDays: Object.keys(schedules).length
             }
         });
-        
+
     } catch (error: any) {
         console.error('❌ Error creating calendar schedule:', error);
         return res.status(500).json({
@@ -490,20 +490,20 @@ export async function updateCalendarSchedule(req: Request, res: Response) {
         const userId = req.user!.id;
         const { adId } = req.params;
         const { schedules, timezone } = req.body;
-        
+
         console.log(`📅 Updating calendar schedule for ad ${adId}`);
         console.log(`📅 [UPDATE] Received schedules for dates:`, Object.keys(schedules || {}));
-        
+
         // Charger le schedule existant
         const existing = await getCalendarScheduleFromCacheOrDB(userId, adId);
-        
+
         if (!existing) {
             return res.status(404).json({
                 success: false,
                 message: "Calendar schedule not found. Use POST to create one."
             });
         }
-        
+
         console.log(`📅 [UPDATE] Existing schedule has dates:`, Object.keys(existing.schedules || {}));
         // Log des slots existants pour chaque date modifiée
         for (const date of Object.keys(schedules || {})) {
@@ -521,7 +521,7 @@ export async function updateCalendarSchedule(req: Request, res: Response) {
                 });
             }
         }
-        
+
         // Désactiver le schedule récurrent si présent (le schedule calendrier prend la priorité)
         try {
             await disableRecurringScheduleForAd(userId, adId);
@@ -533,11 +533,11 @@ export async function updateCalendarSchedule(req: Request, res: Response) {
             console.error('⚠️ Error disabling recurring schedule:', deleteError);
             // Ne pas faire échouer l'opération principale si la désactivation échoue
         }
-        
+
         // Merger les nouveaux schedules avec les existants AU NIVEAU DES SLOTS (pas des dates)
         // Cela préserve les slots existants qui ne sont pas modifiés
         const mergedSchedules = { ...existing.schedules };
-        
+
         // Valider et merger les nouveaux schedules
         for (const [date, daySchedule] of Object.entries(schedules)) {
             if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
@@ -546,7 +546,7 @@ export async function updateCalendarSchedule(req: Request, res: Response) {
                     message: `Invalid date format: ${date}`
                 });
             }
-            
+
             const day = daySchedule as DaySchedule;
             if (!day.timeSlots || !Array.isArray(day.timeSlots)) {
                 return res.status(400).json({
@@ -554,11 +554,11 @@ export async function updateCalendarSchedule(req: Request, res: Response) {
                     message: `Invalid timeSlots for date ${date}`
                 });
             }
-            
+
             // Récupérer les slots existants pour cette date (si elle existe)
             const existingDaySchedule = mergedSchedules[date];
             const existingSlots = existingDaySchedule?.timeSlots || [];
-            
+
             // Valider et préparer les nouveaux slots
             const validatedSlots: TimeSlot[] = [];
             for (const slot of day.timeSlots) {
@@ -570,7 +570,7 @@ export async function updateCalendarSchedule(req: Request, res: Response) {
                         message: `Invalid time slot for date ${date}`
                     });
                 }
-                
+
                 // Vérifier que la durée du slot est d'au moins 1 heure (60 minutes)
                 const slotDuration = slot.stopMinutes - slot.startMinutes;
                 if (slotDuration < 60) {
@@ -579,25 +579,25 @@ export async function updateCalendarSchedule(req: Request, res: Response) {
                         message: `Invalid time slot for date ${date}: Each time slot must have a minimum duration of 1 hour (60 minutes). The slot from ${formatMinutesToTime(slot.startMinutes)} to ${formatMinutesToTime(slot.stopMinutes)} is only ${slotDuration} minutes.`
                     });
                 }
-                
+
                 // Générer ID si manquant
                 if (!slot.id) {
                     slot.id = `${date}-${slot.startMinutes}-${slot.stopMinutes}-${Date.now()}`;
                 }
-                
+
                 // Préserver enabled si non défini (garder la valeur existante ou true par défaut)
                 if (slot.enabled === undefined) {
                     // Chercher le slot existant avec le même ID pour préserver son état enabled
                     const existingSlot = existingSlots.find(s => s.id === slot.id);
                     slot.enabled = existingSlot?.enabled !== undefined ? existingSlot.enabled : true;
                 }
-                
+
                 validatedSlots.push(slot);
             }
-            
+
             // MERGER les slots par ID : remplacer les slots existants avec le même ID, ajouter les nouveaux
             const mergedSlots: TimeSlot[] = [...existingSlots];
-            
+
             for (const newSlot of validatedSlots) {
                 const existingSlotIndex = mergedSlots.findIndex(s => s.id === newSlot.id);
                 if (existingSlotIndex >= 0) {
@@ -611,12 +611,12 @@ export async function updateCalendarSchedule(req: Request, res: Response) {
                     mergedSlots.push(newSlot);
                 }
             }
-            
+
             // Mettre à jour la date avec les slots mergés
             mergedSchedules[date] = {
                 timeSlots: mergedSlots
             };
-            
+
             // Valider les règles de slots après le merge (max 2 par jour, min 1h entre activation/stop)
             const validation = validateDaySlots(date, mergedSlots);
             if (!validation.valid) {
@@ -625,13 +625,13 @@ export async function updateCalendarSchedule(req: Request, res: Response) {
                     message: validation.message
                 });
             }
-            
+
             console.log(`📅 [UPDATE] After merge for ${date}: ${mergedSlots.length} slots total`);
             mergedSlots.forEach((slot: any, idx: number) => {
                 console.log(`📅 [UPDATE] Merged slot ${idx}: id=${slot.id}, enabled=${slot.enabled}, start=${slot.startMinutes}, stop=${slot.stopMinutes}`);
             });
         }
-        
+
         // Mettre à jour en DB (requête optimisée avec index)
         const { data, error } = await supabase
             .from('calendar_schedules')
@@ -644,7 +644,7 @@ export async function updateCalendarSchedule(req: Request, res: Response) {
             .eq('ad_id', adId)
             .select()
             .single();
-        
+
         if (error) {
             console.error('❌ Error updating calendar schedule:', error);
             return res.status(500).json({
@@ -653,17 +653,17 @@ export async function updateCalendarSchedule(req: Request, res: Response) {
                 error: error.message
             });
         }
-        
+
         // Invalider le cache
         invalidateCalendarCache(userId, adId);
-        
+
         // Log
         await createLog(userId, "CALENDAR_SCHEDULE_UPDATE", {
             adId,
             updatedDays: Object.keys(schedules).length,
             totalDays: Object.keys(mergedSchedules).length
         });
-        
+
         return res.json({
             success: true,
             message: "Calendar schedule updated successfully",
@@ -673,7 +673,7 @@ export async function updateCalendarSchedule(req: Request, res: Response) {
                 totalDays: Object.keys(mergedSchedules).length
             }
         });
-        
+
     } catch (error: any) {
         console.error('❌ Error updating calendar schedule:', error);
         return res.status(500).json({
@@ -688,9 +688,9 @@ export async function deleteCalendarScheduleDate(req: Request, res: Response) {
     try {
         const userId = req.user!.id;
         const { adId, date } = req.params;
-        
+
         console.log(`📅 Deleting calendar schedule date ${date} for ad ${adId}`);
-        
+
         // Valider format de date
         if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
             return res.status(400).json({
@@ -698,21 +698,21 @@ export async function deleteCalendarScheduleDate(req: Request, res: Response) {
                 message: "Invalid date format. Expected YYYY-MM-DD"
             });
         }
-        
+
         // Charger le schedule existant
         const existing = await getCalendarScheduleFromCacheOrDB(userId, adId);
-        
+
         if (!existing || !existing.schedules[date]) {
             return res.status(404).json({
                 success: false,
                 message: `No schedule found for date ${date}`
             });
         }
-        
+
         // Supprimer la date du schedule
         const updatedSchedules = { ...existing.schedules };
         delete updatedSchedules[date];
-        
+
         // Mettre à jour en DB (requête optimisée)
         const { data, error } = await supabase
             .from('calendar_schedules')
@@ -724,7 +724,7 @@ export async function deleteCalendarScheduleDate(req: Request, res: Response) {
             .eq('ad_id', adId)
             .select()
             .single();
-        
+
         if (error) {
             console.error('❌ Error deleting calendar schedule date:', error);
             return res.status(500).json({
@@ -733,10 +733,10 @@ export async function deleteCalendarScheduleDate(req: Request, res: Response) {
                 error: error.message
             });
         }
-        
+
         // Invalider le cache
         invalidateCalendarCache(userId, adId);
-        
+
         return res.json({
             success: true,
             message: `Schedule for date ${date} deleted successfully`,
@@ -745,7 +745,7 @@ export async function deleteCalendarScheduleDate(req: Request, res: Response) {
                 remainingDays: Object.keys(updatedSchedules).length
             }
         });
-        
+
     } catch (error: any) {
         console.error('❌ Error deleting calendar schedule date:', error);
         return res.status(500).json({
@@ -760,16 +760,16 @@ export async function deleteCalendarSchedule(req: Request, res: Response) {
     try {
         const userId = req.user!.id;
         const { adId } = req.params;
-        
+
         console.log(`📅 Deleting calendar schedule for ad ${adId}`);
-        
+
         // Supprimer de la DB (requête optimisée avec index)
         const { error } = await supabase
             .from('calendar_schedules')
             .delete()
             .eq('user_id', userId)
             .eq('ad_id', adId);
-        
+
         if (error) {
             console.error('❌ Error deleting calendar schedule:', error);
             return res.status(500).json({
@@ -778,20 +778,20 @@ export async function deleteCalendarSchedule(req: Request, res: Response) {
                 error: error.message
             });
         }
-        
+
         // Invalider le cache
         invalidateCalendarCache(userId, adId);
-        
+
         // Log
         await createLog(userId, "CALENDAR_SCHEDULE_DELETE", {
             adId
         });
-        
+
         return res.json({
             success: true,
             message: "Calendar schedule deleted successfully"
         });
-        
+
     } catch (error: any) {
         console.error('❌ Error deleting calendar schedule:', error);
         return res.status(500).json({
@@ -806,7 +806,7 @@ export async function getCalendarScheduleHistory(req: Request, res: Response) {
     try {
         const userId = req.user!.id;
         const { adId } = req.params;
-        
+
         // Paramètres de requête avec valeurs par défaut
         const dateFrom = req.query.dateFrom as string | undefined;
         const dateTo = req.query.dateTo as string | undefined;
@@ -816,9 +816,9 @@ export async function getCalendarScheduleHistory(req: Request, res: Response) {
         const status = req.query.status as 'SUCCESS' | 'ERROR' | 'PENDING' | undefined;
         const limit = parseInt(req.query.limit as string) || 50;
         const offset = parseInt(req.query.offset as string) || 0;
-        
+
         console.log(`📜 Getting calendar schedule history for ad ${adId}`);
-        
+
         // Construire la requête avec filtres
         let query = supabase
             .from('calendar_schedule_history')
@@ -827,7 +827,7 @@ export async function getCalendarScheduleHistory(req: Request, res: Response) {
             .eq('ad_id', adId)
             .order('execution_time', { ascending: false })
             .range(offset, offset + limit - 1);
-        
+
         // Appliquer les filtres optionnels
         // Filtre par execution_time (plus précis, inclut l'heure)
         if (executionTimeFrom) {
@@ -849,9 +849,9 @@ export async function getCalendarScheduleHistory(req: Request, res: Response) {
         if (status) {
             query = query.eq('status', status);
         }
-        
+
         const { data, error, count } = await query;
-        
+
         if (error) {
             console.error('❌ Error getting calendar schedule history:', error);
             return res.status(500).json({
@@ -859,7 +859,7 @@ export async function getCalendarScheduleHistory(req: Request, res: Response) {
                 message: error.message || "Error getting calendar schedule history"
             });
         }
-        
+
         // Transformer les données pour le frontend
         const history = (data || []).map(item => ({
             id: item.id,
@@ -874,7 +874,7 @@ export async function getCalendarScheduleHistory(req: Request, res: Response) {
             errorMessage: item.error_message || undefined,
             facebookApiResponse: item.facebook_api_response || undefined
         }));
-        
+
         return res.json({
             success: true,
             data: {
@@ -884,7 +884,7 @@ export async function getCalendarScheduleHistory(req: Request, res: Response) {
                 offset
             }
         });
-        
+
     } catch (error: any) {
         console.error('❌ Error getting calendar schedule history:', error);
         return res.status(500).json({
@@ -900,16 +900,16 @@ export async function deleteCalendarScheduleHistory(req: Request, res: Response)
         const userId = req.user!.id;
         const { adId } = req.params;
         const { ids } = req.body; // Array of history entry IDs to delete
-        
+
         if (!ids || !Array.isArray(ids) || ids.length === 0) {
             return res.status(400).json({
                 success: false,
                 message: "IDs array is required and must not be empty"
             });
         }
-        
+
         console.log(`🗑️ Deleting ${ids.length} calendar schedule history entry/entries for ad ${adId}`);
-        
+
         // Supprimer les entrées d'historique (vérifier que l'utilisateur est propriétaire)
         const { error } = await supabase
             .from('calendar_schedule_history')
@@ -917,7 +917,7 @@ export async function deleteCalendarScheduleHistory(req: Request, res: Response)
             .eq('user_id', userId)
             .eq('ad_id', adId)
             .in('id', ids);
-        
+
         if (error) {
             console.error('❌ Error deleting calendar schedule history:', error);
             return res.status(500).json({
@@ -925,15 +925,15 @@ export async function deleteCalendarScheduleHistory(req: Request, res: Response)
                 message: error.message || "Error deleting calendar schedule history"
             });
         }
-        
+
         console.log(`✅ Successfully deleted ${ids.length} history entry/entries`);
-        
+
         return res.json({
             success: true,
             message: `Successfully deleted ${ids.length} history entry/entries`,
             deletedCount: ids.length
         });
-        
+
     } catch (error: any) {
         console.error('❌ Error deleting calendar schedule history:', error);
         return res.status(500).json({

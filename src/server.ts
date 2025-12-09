@@ -20,34 +20,34 @@ const app = express();
 
 // CORS — Configuration générale pour Vercel avec pattern regex
 const isAllowedUrl = (origin: string): boolean => {
-    // Patterns pour détecter automatiquement les URLs autorisées
-    const patterns: (string | RegExp)[] = [
-      "https://slobberingly-uncombinative-camryn.ngrok-free.dev",
-      // Vercel - pattern très général pour capturer toutes les URLs Vercel
-      /^https:\/\/[a-zA-Z0-9-]+\.vercel\.app$/,
-    
+  // Patterns pour détecter automatiquement les URLs autorisées
+  const patterns: (string | RegExp)[] = [
+    "https://slobberingly-uncombinative-camryn.ngrok-free.dev",
+    // Vercel - pattern très général pour capturer toutes les URLs Vercel
+    /^https:\/\/[a-zA-Z0-9-]+\.vercel\.app$/,
+
     // Pattern spécifique pour les URLs avec format projects
     /^https:\/\/frontend-[a-zA-Z0-9-]+-youssefs-projects-[a-zA-Z0-9-]+\.vercel\.app$/,
-    
+
     // Netlify (toutes les URLs *.netlify.app)
     /^https:\/\/[a-zA-Z0-9-]+\.netlify\.app$/,
-    
+
     // GitHub Pages (toutes les URLs *.github.io)
     /^https:\/\/[a-zA-Z0-9-]+\.github\.io$/,
-    
+
     // Heroku (toutes les URLs *.herokuapp.com)
     /^https:\/\/[a-zA-Z0-9-]+\.herokuapp\.com$/,
-    
+
     // Localhost (développement local)
     /^https?:\/\/localhost(:\d+)?$/,
     /^https?:\/\/127\.0\.0\.1(:\d+)?$/,
-    
+
     // IP locales (développement)
     /^https?:\/\/192\.168\.\d+\.\d+(:\d+)?$/,
     /^https?:\/\/10\.\d+\.\d+\.\d+(:\d+)?$/,
   ];
-  
-  return patterns.some(pattern => 
+
+  return patterns.some(pattern =>
     typeof pattern === 'string' ? pattern === origin : pattern.test(origin)
   );
 };
@@ -62,7 +62,7 @@ const buildInsightsUrl = (
   until?: string
 ): string => {
   let url = `https://graph.facebook.com/v18.0/${accountId}/insights?access_token=${token}&fields=${fields}`;
-  
+
   if (dateRange) {
     url += `&date_preset=${dateRange}`;
   } else if (since && until) {
@@ -71,7 +71,7 @@ const buildInsightsUrl = (
     // Par défaut, utiliser last_30d
     url += `&date_preset=last_30d`;
   }
-  
+
   return url;
 };
 
@@ -80,8 +80,8 @@ app.use(
     origin: function (origin, callback) {
       // Autoriser les requêtes sans origin (mobile apps, postman, etc.)
       if (!origin) return callback(null, true);
-      
-      
+
+
       if (isAllowedUrl(origin)) {
         callback(null, true);
       } else {
@@ -92,7 +92,7 @@ app.use(
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allowedHeaders: [
       "Content-Type",
-      "Authorization", 
+      "Authorization",
       "X-Requested-With",
       "Accept",
       "Origin",
@@ -100,7 +100,7 @@ app.use(
       "Access-Control-Allow-Headers",
       "Access-Control-Allow-Methods"
     ],
-    optionsSuccessStatus: 200, // ✅ Important pour Vercel
+    optionsSuccessStatus: 200,
     preflightContinue: false
   })
 );
@@ -108,20 +108,20 @@ app.use(
 // 🔧 Headers CORS manuels pour Vercel - Configuration permissive
 app.use((req, res, next) => {
   const origin = req.headers.origin;
-  
+
   // Toujours ajouter les headers CORS pour Vercel
   res.header('Access-Control-Allow-Origin', origin || '*');
   res.header('Access-Control-Allow-Credentials', 'true');
   res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
   res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, Accept, Origin');
   res.header('Access-Control-Max-Age', '86400'); // Cache preflight pour 24h
-  
+
   // Gérer les requêtes OPTIONS (preflight)
   if (req.method === 'OPTIONS') {
     res.status(200).end();
     return;
   }
-  
+
   next();
 });
 
@@ -142,14 +142,14 @@ app.get("/api/test", (_req, res) => {
     environment: {
       node: process.version,
       platform: process.platform,
-      vercel: process.env.VERCEL ? "✅ Oui" : "❌ Non",
+      vercel: process.env.VERCEL ? " Oui" : " Non",
       region: process.env.VERCEL_REGION || "Non défini"
     },
     deployment: {
       url: "https://facebook-api-marketing-backend.vercel.app",
       status: "🚀 ACTIF",
-      cors: "✅ Configuré",
-      database: "✅ Supabase connecté"
+      cors: " Configuré",
+      database: " Supabase connecté"
     }
   });
 });
@@ -158,10 +158,10 @@ app.get("/api/test", (_req, res) => {
 app.get("/api/test-full", async (_req, res) => {
   try {
     const { supabase } = await import("./supabaseClient.js");
-    
+
     // Test de connexion Supabase
     const { data, error } = await supabase.from('logs').select('count').limit(1);
-    
+
     res.json({
       message: "🎉 Backend complètement opérationnel !",
       status: "✅ SUCCESS",
@@ -203,7 +203,7 @@ app.get("/api/test-full", async (_req, res) => {
 // 🔧 Endpoint CORS spécifique pour Vercel - Configuration permissive
 app.options("/api/*", (req, res) => {
   const origin = req.headers.origin;
-  
+
   res.header('Access-Control-Allow-Origin', origin || '*');
   res.header('Access-Control-Allow-Credentials', 'true');
   res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
@@ -215,7 +215,7 @@ app.options("/api/*", (req, res) => {
 // 🧪 Test endpoint CORS spécifique (compatibilité)
 app.get("/api/cors-test", (req, res) => {
   const origin = req.headers.origin;
-  
+
   res.json({
     message: "🎉 CORS test successful!",
     origin: origin,
@@ -241,7 +241,7 @@ app.get("/api/cors-test", (req, res) => {
 // 🧪 Test endpoint CORS spécifique (nouveau)
 app.get("/api/cors-test-new", (req, res) => {
   const origin = req.headers.origin;
-  
+
   res.json({
     message: "🎉 CORS test successful (new endpoint)!",
     origin: origin,
@@ -272,7 +272,7 @@ app.get("/api/simple-test", (req, res) => {
 // 🔍 Endpoints de compatibilité (sans /api) pour le frontend
 app.get("/cors-test", (req, res) => {
   const origin = req.headers.origin;
-  
+
   res.json({
     message: "🎉 CORS test successful (compatibility endpoint)!",
     origin: origin,
@@ -301,7 +301,7 @@ app.get("/facebook/data", async (req, res) => {
     // Récupérer le token depuis les headers ou le body
     const authHeader = req.headers.authorization;
     const token = authHeader ? authHeader.replace('Bearer ', '') : null;
-    
+
     if (!token) {
       return res.status(401).json({
         message: "No access token provided",
@@ -312,7 +312,7 @@ app.get("/facebook/data", async (req, res) => {
         }
       });
     }
-    
+
     // Tester le token avec Facebook d'abord
     const testResponse = await fetch(`https://graph.facebook.com/v18.0/me?access_token=${token}`);
     const testData = await testResponse.json();
@@ -329,11 +329,11 @@ app.get("/facebook/data", async (req, res) => {
         }
       });
     }
-    
+
     // Récupérer les données utilisateur depuis Facebook
     const userResponse = await fetch(`https://graph.facebook.com/v18.0/me?fields=id,name,email&access_token=${token}`);
     const userData = await userResponse.json();
-    
+
     if (userData.error) {
       return res.status(400).json({
         message: "Error fetching user data",
@@ -346,7 +346,7 @@ app.get("/facebook/data", async (req, res) => {
         }
       });
     }
-    
+
     // Récupérer les comptes publicitaires
     let adAccounts = [];
     try {
@@ -356,7 +356,7 @@ app.get("/facebook/data", async (req, res) => {
     } catch (error) {
       // Erreur silencieuse - continuer sans ad accounts
     }
-    
+
     // Récupérer les pages
     let pages = [];
     try {
@@ -366,14 +366,14 @@ app.get("/facebook/data", async (req, res) => {
     } catch (error) {
       // Erreur silencieuse - continuer sans pages
     }
-    
+
     const facebookData = {
       user: userData,
       adAccounts: adAccounts,
       pages: pages,
       businessManagers: [] // Les business managers nécessitent des permissions spéciales
     };
-    
+
     res.json({
       message: "Facebook data retrieved successfully",
       success: true,
@@ -401,18 +401,18 @@ app.post("/facebook/token", async (req, res) => {
     // Rate limiting simple basé sur l'IP
     const clientIp = req.ip || req.headers['x-forwarded-for'] || req.connection.remoteAddress || 'unknown';
     const now = Date.now();
-    
+
     // Nettoyer les anciennes requêtes
     const requests = tokenRequestTimestamps.get(clientIp) || [];
     const recentRequests = requests.filter(timestamp => now - timestamp < TOKEN_RATE_LIMIT_WINDOW);
-    
+
     // Vérifier le rate limit
     if (recentRequests.length >= TOKEN_RATE_LIMIT_MAX_REQUESTS) {
       const oldestRequest = Math.min(...recentRequests);
       const waitTime = Math.ceil((TOKEN_RATE_LIMIT_WINDOW - (now - oldestRequest)) / 1000);
-      
+
       console.warn(`⚠️ Rate limit exceeded for IP ${clientIp}: ${recentRequests.length} requests in ${TOKEN_RATE_LIMIT_WINDOW}ms`);
-      
+
       return res.status(429).json({
         message: `Too many requests. Please wait ${waitTime} seconds before trying again.`,
         error: "RATE_LIMIT",
@@ -420,25 +420,25 @@ app.post("/facebook/token", async (req, res) => {
         success: false
       });
     }
-    
+
     // Ajouter cette requête à la liste
     recentRequests.push(now);
     tokenRequestTimestamps.set(clientIp, recentRequests);
-    
+
     const { accessToken } = req.body;
-    
+
     if (!accessToken) {
-      return res.status(400).json({ 
+      return res.status(400).json({
         message: "Access token is required",
-        success: false 
+        success: false
       });
     }
-    
+
     // Valider le token avec Facebook
     try {
       const validationResponse = await fetch(`https://graph.facebook.com/v18.0/me?access_token=${accessToken}`);
       const validationData = await validationResponse.json();
-      
+
       if (validationData.error) {
         // Gestion spécifique des erreurs Facebook rate limit
         if (validationData.error.code === 4 || validationData.error.code === 17) {
@@ -449,16 +449,16 @@ app.post("/facebook/token", async (req, res) => {
             success: false
           });
         }
-        
+
         return res.status(400).json({
           message: "Invalid Facebook token",
           error: validationData.error,
           success: false
         });
       }
-      
-      
-      
+
+
+
       // Ici vous pourriez sauvegarder le token en base de données
       // Pour l'instant, on le retourne dans la réponse pour que le frontend puisse l'utiliser
       res.json({
@@ -467,10 +467,10 @@ app.post("/facebook/token", async (req, res) => {
         user: validationData,
         timestamp: new Date().toISOString()
       });
-      
+
     } catch (validationError: any) {
       console.error('Token validation error:', validationError);
-      
+
       // Gestion des erreurs de rate limit Facebook
       if (validationError.message?.includes("429") || validationError.message?.includes("rate limit")) {
         return res.status(429).json({
@@ -480,7 +480,7 @@ app.post("/facebook/token", async (req, res) => {
           success: false
         });
       }
-      
+
       return res.status(400).json({
         message: "Failed to validate Facebook token",
         error: validationError.message,
@@ -501,7 +501,7 @@ app.post("/facebook/token", async (req, res) => {
 app.post("/facebook/token-test", (req, res) => {
   const origin = req.headers.origin;
   const authHeader = req.headers.authorization;
-  
+
   res.json({
     message: "🎉 Facebook token test endpoint accessible!",
     origin: origin,
@@ -525,7 +525,7 @@ app.get("/facebook/debug", async (req, res) => {
   try {
     const authHeader = req.headers.authorization;
     const token = authHeader ? authHeader.replace('Bearer ', '') : null;
-    
+
     if (!token) {
       return res.status(400).json({
         message: "No token provided",
@@ -536,12 +536,12 @@ app.get("/facebook/debug", async (req, res) => {
         }
       });
     }
-    
+
     // Tester le token avec Facebook
     try {
       const testResponse = await fetch(`https://graph.facebook.com/v18.0/me?access_token=${token}`);
       const testData = await testResponse.json();
-      
+
       res.json({
         message: "Token validation successful",
         debug: {
@@ -574,7 +574,7 @@ app.get("/facebook/simple-test", async (req, res) => {
   try {
     const authHeader = req.headers.authorization;
     const token = authHeader ? authHeader.replace('Bearer ', '') : null;
-    
+
     res.json({
       message: "Simple test successful",
       debug: {
@@ -598,18 +598,18 @@ app.get("/facebook/accounts", async (req, res) => {
     // Récupérer le token depuis les headers
     const authHeader = req.headers.authorization;
     const token = authHeader ? authHeader.replace('Bearer ', '') : null;
-    
+
     if (!token) {
       return res.status(401).json({
         message: "No access token provided",
         success: false
       });
     }
-    
+
     // Récupérer les comptes publicitaires depuis Facebook
     const accountsResponse = await fetch(`https://graph.facebook.com/v18.0/me/adaccounts?fields=id,name,account_status,currency,amount_spent&access_token=${token}`);
     const accountsData = await accountsResponse.json();
-    
+
     if (accountsData.error) {
       return res.status(400).json({
         message: "Error fetching Facebook accounts",
@@ -617,7 +617,7 @@ app.get("/facebook/accounts", async (req, res) => {
         success: false
       });
     }
-    
+
     res.json({
       message: "Facebook accounts retrieved successfully",
       success: true,
@@ -636,13 +636,13 @@ app.get("/facebook/accounts", async (req, res) => {
 // 🔍 Test endpoint Facebook data spécifique
 app.get("/api/facebook/data", (req, res) => {
   const origin = req.headers.origin;
-  
+
   // Headers CORS explicites
   res.header('Access-Control-Allow-Origin', origin || '*');
   res.header('Access-Control-Allow-Credentials', 'true');
   res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
   res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, Accept, Origin');
-  
+
   res.json({
     message: "🎉 Facebook data endpoint accessible!",
     origin: origin,
@@ -670,11 +670,11 @@ app.post("/api/facebook/clear-cache", async (req, res) => {
   try {
     const authHeader = req.headers.authorization;
     const token = authHeader ? authHeader.replace('Bearer ', '') : null;
-    
+
     if (!token) {
-      return res.status(401).json({ 
-        message: "No access token provided", 
-        success: false 
+      return res.status(401).json({
+        message: "No access token provided",
+        success: false
       });
     }
 
@@ -711,11 +711,11 @@ app.get("/api/facebook/adaccounts-simple", async (req, res) => {
   try {
     const authHeader = req.headers.authorization;
     const token = authHeader ? authHeader.replace('Bearer ', '') : null;
-    
+
     if (!token) {
-      return res.status(401).json({ 
-        message: "No access token provided", 
-        success: false 
+      return res.status(401).json({
+        message: "No access token provided",
+        success: false
       });
     }
 
@@ -738,9 +738,9 @@ app.get("/api/facebook/adaccounts-simple", async (req, res) => {
       .single() as any;
 
     if (tokenError || !tokenRow) {
-      return res.status(404).json({ 
-        message: "No Facebook token found", 
-        success: false 
+      return res.status(404).json({
+        message: "No Facebook token found",
+        success: false
       });
     }
 
@@ -749,16 +749,16 @@ app.get("/api/facebook/adaccounts-simple", async (req, res) => {
       const adAccountsResponse = await fetch(`https://graph.facebook.com/v18.0/me/adaccounts?access_token=${tokenRow.token}&fields=id,name,account_id,currency,timezone_name,business_name,business_id,created_time,amount_spent,balance,spend_cap,account_status,disable_reason`);
       const adAccountsData = await adAccountsResponse.json();
       if (adAccountsData.error) {
-        return res.status(400).json({ 
-          message: "Facebook API error: " + adAccountsData.error.message, 
-          success: false 
+        return res.status(400).json({
+          message: "Facebook API error: " + adAccountsData.error.message,
+          success: false
         });
       }
 
-      
-      return res.json({ 
-        message: "Ad accounts retrieved successfully", 
-        success: true, 
+
+      return res.json({
+        message: "Ad accounts retrieved successfully",
+        success: true,
         data: {
           adAccounts: adAccountsData.data || [],
           total: adAccountsData.data?.length || 0
@@ -766,17 +766,17 @@ app.get("/api/facebook/adaccounts-simple", async (req, res) => {
       });
 
     } catch (error) {
-      return res.status(500).json({ 
-        message: "Error fetching ad accounts", 
-        success: false 
+      return res.status(500).json({
+        message: "Error fetching ad accounts",
+        success: false
       });
     }
 
   } catch (error) {
-    res.status(500).json({ 
-      message: "Internal server error", 
-      error: error.message, 
-      success: false 
+    res.status(500).json({
+      message: "Internal server error",
+      error: error.message,
+      success: false
     });
   }
 });
@@ -786,11 +786,11 @@ app.get("/api/facebook/adaccounts-detailed", async (req, res) => {
   try {
     const authHeader = req.headers.authorization;
     const token = authHeader ? authHeader.replace('Bearer ', '') : null;
-    
+
     if (!token) {
-      return res.status(401).json({ 
-        message: "No access token provided", 
-        success: false 
+      return res.status(401).json({
+        message: "No access token provided",
+        success: false
       });
     }
 
@@ -813,9 +813,9 @@ app.get("/api/facebook/adaccounts-detailed", async (req, res) => {
       .single() as any;
 
     if (tokenError || !tokenRow) {
-      return res.status(404).json({ 
-        message: "No Facebook token found", 
-        success: false 
+      return res.status(404).json({
+        message: "No Facebook token found",
+        success: false
       });
     }
 
@@ -831,10 +831,10 @@ app.get("/api/facebook/adaccounts-detailed", async (req, res) => {
       // 3. Organiser les ad accounts par Business Manager
       const businessManagers = businessData.data || [];
       const adAccounts = adAccountsData.data || [];
-      
+
       // Créer un objet pour grouper les comptes par Business Manager
       const accountsByBusiness: { [key: string]: any } = {};
-      
+
       // Initialiser avec "No Business Manager"
       accountsByBusiness['no_business'] = {
         business: null,
@@ -843,7 +843,7 @@ app.get("/api/facebook/adaccounts-detailed", async (req, res) => {
         totalBalance: 0,
         totalAccounts: 0
       };
-      
+
       // Initialiser chaque Business Manager
       businessManagers.forEach((business: any) => {
         accountsByBusiness[business.id] = {
@@ -854,12 +854,12 @@ app.get("/api/facebook/adaccounts-detailed", async (req, res) => {
           totalAccounts: 0
         };
       });
-      
+
       // Grouper les comptes par Business Manager
       adAccounts.forEach((account: any) => {
         const businessId = account.owner_business?.id || account.business_id || 'no_business';
         const businessKey = businessId === 'no_business' ? 'no_business' : businessId;
-        
+
         if (accountsByBusiness[businessKey]) {
           accountsByBusiness[businessKey].accounts.push(account);
           accountsByBusiness[businessKey].totalSpend += parseFloat(account.amount_spent || 0);
@@ -867,15 +867,15 @@ app.get("/api/facebook/adaccounts-detailed", async (req, res) => {
           accountsByBusiness[businessKey].totalAccounts += 1;
         }
       });
-      
+
       // Convertir en tableau et trier par nombre de comptes
       const businessAccounts = Object.values(accountsByBusiness)
         .filter((group: any) => group.accounts.length > 0)
         .sort((a: any, b: any) => b.totalAccounts - a.totalAccounts);
 
-      return res.json({ 
-        message: "Accounts organized by Business Manager successfully", 
-        success: true, 
+      return res.json({
+        message: "Accounts organized by Business Manager successfully",
+        success: true,
         data: {
           businessAccounts: businessAccounts,
           businessManagers: businessManagers,
@@ -885,17 +885,17 @@ app.get("/api/facebook/adaccounts-detailed", async (req, res) => {
       });
 
     } catch (error) {
-      return res.status(500).json({ 
-        message: "Error fetching detailed ad accounts", 
-        success: false 
+      return res.status(500).json({
+        message: "Error fetching detailed ad accounts",
+        success: false
       });
     }
 
   } catch (error) {
-    res.status(500).json({ 
-      message: "Internal server error", 
-      error: error.message, 
-      success: false 
+    res.status(500).json({
+      message: "Internal server error",
+      error: error.message,
+      success: false
     });
   }
 });
@@ -906,11 +906,11 @@ app.get("/api/facebook/analytics", async (req, res) => {
     const authHeader = req.headers.authorization;
     const token = authHeader ? authHeader.replace('Bearer ', '') : null;
     const forceRefresh = req.query.refresh === 'true';
-    
+
     if (!token) {
-      return res.status(401).json({ 
-        message: "No access token provided", 
-        success: false 
+      return res.status(401).json({
+        message: "No access token provided",
+        success: false
       });
     }
 
@@ -928,17 +928,17 @@ app.get("/api/facebook/analytics", async (req, res) => {
     const cacheKey = `analytics_${userId}`;
     const cachedData = analyticsCache.get(cacheKey);
     const now = Date.now();
-    
+
     if (!forceRefresh && cachedData && (now - cachedData.timestamp) < CACHE_DURATION) {
-      return res.json({ 
-        message: "Analytics data retrieved from cache", 
-        success: true, 
+      return res.json({
+        message: "Analytics data retrieved from cache",
+        success: true,
         data: cachedData.data,
         cached: true,
         cacheAge: Math.round((now - cachedData.timestamp) / 1000)
       });
     }
-    
+
     if (forceRefresh) {
       analyticsCache.delete(cacheKey);
     }
@@ -952,9 +952,9 @@ app.get("/api/facebook/analytics", async (req, res) => {
       .single() as any;
 
     if (tokenError || !tokenRow) {
-      return res.status(404).json({ 
-        message: "No Facebook token found", 
-        success: false 
+      return res.status(404).json({
+        message: "No Facebook token found",
+        success: false
       });
     }
 
@@ -965,7 +965,7 @@ app.get("/api/facebook/analytics", async (req, res) => {
         // Vérifier d'abord si on a déjà atteint la limite
         const businessResponse = await fetch(`https://graph.facebook.com/v18.0/me/businesses?access_token=${tokenRow.token}&fields=id,name`);
         businessData = await businessResponse.json();
-        
+
         // Si erreur de limite, on continue avec des données vides
         if (businessData.error && businessData.error.code === 4) {
           businessData = { data: [] };
@@ -974,7 +974,7 @@ app.get("/api/facebook/analytics", async (req, res) => {
         console.error('❌ Error fetching business managers:', error);
         businessData = { data: [] };
       }
-      
+
       // Vérifier s'il y a une erreur dans la réponse
       if (businessData.error) {
         console.error('❌ Facebook API error for business managers:', businessData.error);
@@ -987,7 +987,7 @@ app.get("/api/facebook/analytics", async (req, res) => {
       try {
         const adAccountsResponse = await fetch(`https://graph.facebook.com/v18.0/me/adaccounts?access_token=${tokenRow.token}&fields=id,name,account_id,currency,account_status,amount_spent`);
         adAccountsData = await adAccountsResponse.json();
-        
+
         // Si pas d'erreur, essayer d'ajouter plus de champs
         if (!adAccountsData.error) {
           const extendedResponse = await fetch(`https://graph.facebook.com/v18.0/me/adaccounts?access_token=${tokenRow.token}&fields=id,name,account_id,currency,account_status,amount_spent,balance,timezone_name,business_name,business_id,created_time`);
@@ -999,7 +999,7 @@ app.get("/api/facebook/analytics", async (req, res) => {
       } catch (error) {
         adAccountsData = { data: [] };
       }
-      
+
       // Vérifier s'il y a une erreur dans la réponse
       if (adAccountsData.error) {
         // Continuer avec des données vides plutôt que d'échouer
@@ -1012,7 +1012,7 @@ app.get("/api/facebook/analytics", async (req, res) => {
         // Essayer d'abord avec des champs de base
         const pagesResponse = await fetch(`https://graph.facebook.com/v18.0/me/accounts?access_token=${tokenRow.token}&fields=id,name`);
         pagesData = await pagesResponse.json();
-        
+
         // Si pas d'erreur, essayer d'ajouter plus de champs
         if (!pagesData.error) {
           const extendedResponse = await fetch(`https://graph.facebook.com/v18.0/me/accounts?access_token=${tokenRow.token}&fields=id,name,category,created_time,updated_time,is_published`);
@@ -1024,12 +1024,12 @@ app.get("/api/facebook/analytics", async (req, res) => {
       } catch (error) {
         pagesData = { data: [] };
       }
-      
+
       // Vérifier s'il y a une erreur dans la réponse
       if (pagesData.error) {
         pagesData.data = [];
       }
-      
+
       // Solution temporaire : extraire les Business Managers des comptes publicitaires
       if (businessData.data.length === 0 && adAccountsData.data && adAccountsData.data.length > 0) {
         const businessNames = new Set();
@@ -1038,7 +1038,7 @@ app.get("/api/facebook/analytics", async (req, res) => {
             businessNames.add(account.business_name);
           }
         });
-        
+
         // Créer des Business Managers fictifs basés sur les noms trouvés
         const extractedBusinesses = Array.from(businessNames).map((name, index) => ({
           id: `extracted_${index + 1}`,
@@ -1046,7 +1046,7 @@ app.get("/api/facebook/analytics", async (req, res) => {
           timezone_name: 'UTC',
           extracted: true
         }));
-        
+
         if (extractedBusinesses.length > 0) {
           businessData.data = extractedBusinesses;
         }
@@ -1096,13 +1096,13 @@ app.get("/api/facebook/analytics", async (req, res) => {
         adAccounts: adAccountsData.data || [],
         pages: pagesData.data || [],
         metrics: {
-            totalCampaigns,
+          totalCampaigns,
           totalAdsets,
           totalAds,
           totalSpend: Math.round(totalSpend * 100) / 100,
           totalImpressions,
           totalClicks,
-            totalConversions,
+          totalConversions,
           totalAdAccounts: adAccountsData.data?.length || 0,
           totalPages: pagesData.data?.length || 0,
           totalBusinesses: businessData.data?.length || 0
@@ -1115,28 +1115,28 @@ app.get("/api/facebook/analytics", async (req, res) => {
         data: analyticsData,
         timestamp: now
       });
-      
-      return res.json({ 
-        message: "Analytics data retrieved successfully", 
-        success: true, 
+
+      return res.json({
+        message: "Analytics data retrieved successfully",
+        success: true,
         data: analyticsData,
         cached: false
       });
 
     } catch (error) {
       console.error('❌ Error fetching analytics data:', error);
-      return res.status(500).json({ 
-        message: "Error fetching analytics data", 
-        success: false 
+      return res.status(500).json({
+        message: "Error fetching analytics data",
+        success: false
       });
     }
 
   } catch (error) {
     console.error('Error in /api/facebook/analytics:', error);
-    res.status(500).json({ 
-      message: "Internal server error", 
-      error: error.message, 
-      success: false 
+    res.status(500).json({
+      message: "Internal server error",
+      error: error.message,
+      success: false
     });
   }
 });
@@ -1146,11 +1146,11 @@ app.get("/api/facebook/insights/:accountId", async (req, res) => {
   try {
     const authHeader = req.headers.authorization;
     const token = authHeader ? authHeader.replace('Bearer ', '') : null;
-    
+
     if (!token) {
-      return res.status(401).json({ 
-        message: "No access token provided", 
-        success: false 
+      return res.status(401).json({
+        message: "No access token provided",
+        success: false
       });
     }
 
@@ -1173,9 +1173,9 @@ app.get("/api/facebook/insights/:accountId", async (req, res) => {
       .single() as any;
 
     if (tokenError || !tokenRow) {
-      return res.status(404).json({ 
-        message: "No Facebook token found", 
-        success: false 
+      return res.status(404).json({
+        message: "No Facebook token found",
+        success: false
       });
     }
 
@@ -1183,14 +1183,14 @@ app.get("/api/facebook/insights/:accountId", async (req, res) => {
 
     // Récupérer les insights du compte publicitaire
     const insightsUrl = `https://graph.facebook.com/v18.0/${accountId}/insights?access_token=${tokenRow.token}&fields=impressions,clicks,spend,reach,conversions,ctr,cpc,conversion_rate&date_preset=last_30d`;
-    
+
     try {
       const insightsResponse = await fetch(insightsUrl);
       const insightsData = await insightsResponse.json();
-      
+
       if (insightsData.error) {
         console.error('❌ Facebook API error for insights:', insightsData.error);
-        
+
         // Gestion spéciale pour la limite d'API
         if (insightsData.error.code === 4) {
           return res.status(429).json({
@@ -1200,7 +1200,7 @@ app.get("/api/facebook/insights/:accountId", async (req, res) => {
             retryAfter: 300 // 5 minutes
           });
         }
-        
+
         return res.status(400).json({
           success: false,
           message: `Facebook API error: ${insightsData.error.message}`,
@@ -1210,8 +1210,8 @@ app.get("/api/facebook/insights/:accountId", async (req, res) => {
 
       // Traiter les données d'insights
       const insights = insightsData.data && insightsData.data.length > 0 ? insightsData.data[0] : {};
-      
-      
+
+
       res.json({
         success: true,
         data: insights,
@@ -1227,9 +1227,9 @@ app.get("/api/facebook/insights/:accountId", async (req, res) => {
     }
   } catch (error) {
     console.error('❌ Error in insights endpoint:', error);
-    res.status(500).json({ 
-      message: "Internal server error", 
-      success: false 
+    res.status(500).json({
+      message: "Internal server error",
+      success: false
     });
   }
 });
@@ -1239,14 +1239,14 @@ app.get("/api/facebook/account/:accountId/analytics", async (req, res) => {
   try {
     const { accountId } = req.params;
     const { dateRange, since, until } = req.query;
-    
+
     const authHeader = req.headers.authorization;
     const token = authHeader ? authHeader.replace('Bearer ', '') : null;
-    
+
     if (!token) {
-      return res.status(401).json({ 
-        message: "No access token provided", 
-        success: false 
+      return res.status(401).json({
+        message: "No access token provided",
+        success: false
       });
     }
 
@@ -1269,9 +1269,9 @@ app.get("/api/facebook/account/:accountId/analytics", async (req, res) => {
       .single() as any;
 
     if (tokenError || !tokenRow) {
-      return res.status(404).json({ 
-        message: "No Facebook token found", 
-        success: false 
+      return res.status(404).json({
+        message: "No Facebook token found",
+        success: false
       });
     }
 
@@ -1295,7 +1295,7 @@ app.get("/api/facebook/account/:accountId/analytics", async (req, res) => {
 
       if (insightsData.error) {
         console.error('❌ Facebook API error:', insightsData.error);
-        
+
         // Gestion spéciale pour la limite d'API
         if (insightsData.error.code === 4) {
           return res.status(429).json({
@@ -1315,7 +1315,7 @@ app.get("/api/facebook/account/:accountId/analytics", async (req, res) => {
             message: "No analytics data available for this account (invalid parameter)"
           });
         }
-        
+
         if (insightsData.error.code === 190) {
           console.error('❌ Facebook token expired or invalid');
           return res.status(401).json({
@@ -1336,7 +1336,7 @@ app.get("/api/facebook/account/:accountId/analytics", async (req, res) => {
       // Si campaign_id est présent, on crée une entrée par campagne
       // Sinon, on agrège toutes les métriques au niveau compte
       const campaigns = [];
-      
+
       if (insightsData.data && Array.isArray(insightsData.data)) {
         // Variables pour l'agrégation au niveau compte (si pas de campaign_id)
         let totalSpend = 0;
@@ -1345,14 +1345,14 @@ app.get("/api/facebook/account/:accountId/analytics", async (req, res) => {
         let totalReach = 0;
         let totalConversions = 0;
         let hasCampaignId = false;
-        
+
         for (const insight of insightsData.data) {
           const campaignId = insight.campaign_id;
-          
+
           if (campaignId) {
             // Cas 1: Données par campagne - créer une entrée par campagne
             hasCampaignId = true;
-            
+
             // Extraire les conversions depuis le tableau actions
             let conversions = 0;
             if (insight.actions && Array.isArray(insight.actions)) {
@@ -1383,7 +1383,7 @@ app.get("/api/facebook/account/:accountId/analytics", async (req, res) => {
             totalImpressions += parseInt(insight.impressions || 0);
             totalClicks += parseInt(insight.clicks || 0);
             totalReach += parseInt(insight.reach || 0);
-            
+
             // Extraire les conversions des actions
             if (insight.actions && Array.isArray(insight.actions)) {
               for (const action of insight.actions) {
@@ -1394,13 +1394,13 @@ app.get("/api/facebook/account/:accountId/analytics", async (req, res) => {
             }
           }
         }
-        
+
         // Si aucune entrée n'avait de campaign_id, créer une entrée agrégée
         if (!hasCampaignId && insightsData.data.length > 0) {
           const aggregatedCtr = totalImpressions > 0 ? (totalClicks / totalImpressions) * 100 : 0;
           const aggregatedCpc = totalClicks > 0 ? totalSpend / totalClicks : 0;
           const aggregatedCpm = totalImpressions > 0 ? (totalSpend / totalImpressions) * 1000 : 0;
-          
+
           campaigns.push({
             id: 'aggregated',
             name: 'All Campaigns (Aggregated)',
@@ -1435,8 +1435,8 @@ app.get("/api/facebook/account/:accountId/analytics", async (req, res) => {
 
   } catch (error: any) {
     console.error('❌ Error in analytics endpoint:', error);
-    return res.status(500).json({ 
-      message: "Internal server error", 
+    return res.status(500).json({
+      message: "Internal server error",
       success: false,
       data: { campaigns: [] }
     });
@@ -1448,11 +1448,11 @@ app.get("/api/facebook/business/:businessId/adaccounts", async (req, res) => {
   try {
     const authHeader = req.headers.authorization;
     const token = authHeader ? authHeader.replace('Bearer ', '') : null;
-    
+
     if (!token) {
-      return res.status(401).json({ 
-        message: "No access token provided", 
-        success: false 
+      return res.status(401).json({
+        message: "No access token provided",
+        success: false
       });
     }
 
@@ -1474,9 +1474,9 @@ app.get("/api/facebook/business/:businessId/adaccounts", async (req, res) => {
       .single() as any;
 
     if (tokenError || !tokenRow) {
-      return res.status(404).json({ 
-        message: "No Facebook token found", 
-        success: false 
+      return res.status(404).json({
+        message: "No Facebook token found",
+        success: false
       });
     }
 
@@ -1485,13 +1485,13 @@ app.get("/api/facebook/business/:businessId/adaccounts", async (req, res) => {
 
     // Vérifier si c'est un Business Manager extrait
     if (businessId.startsWith('extracted_')) {
-      
+
       // Récupérer tous les comptes publicitaires et filtrer par business_name
       try {
         const allAdAccountsUrl = `https://graph.facebook.com/v18.0/me/adaccounts?access_token=${tokenRow.token}&fields=id,name,account_id,currency,account_status,amount_spent,balance,timezone_name,business_name,business_id,created_time`;
         const allAdAccountsResponse = await fetch(allAdAccountsUrl);
         const allAdAccountsData = await allAdAccountsResponse.json();
-        
+
         if (allAdAccountsData.error) {
           return res.status(400).json({
             success: false,
@@ -1499,22 +1499,22 @@ app.get("/api/facebook/business/:businessId/adaccounts", async (req, res) => {
             data: []
           });
         }
-        
+
         // Récupérer le nom du business manager extrait
         const businessName = req.query.businessName as string;
-        
+
         // Filtrer les comptes publicitaires par business_name
-        const filteredAccounts = allAdAccountsData.data.filter((account: any) => 
+        const filteredAccounts = allAdAccountsData.data.filter((account: any) =>
           account.business_name && account.business_name.trim() === businessName
         );
-        
-        
+
+
         return res.json({
           success: true,
           data: filteredAccounts,
           message: `Ad accounts for business ${businessName} retrieved successfully`
         });
-        
+
       } catch (error) {
         return res.status(500).json({
           success: false,
@@ -1527,10 +1527,10 @@ app.get("/api/facebook/business/:businessId/adaccounts", async (req, res) => {
     try {
       // Récupérer les comptes publicitaires du business manager (vrai Business Manager)
       const adAccountsUrl = `https://graph.facebook.com/v18.0/${businessId}/adaccounts?access_token=${tokenRow.token}&fields=id,name,account_id,currency,account_status,amount_spent,balance,timezone_name,business_name,business_id,created_time`;
-      
+
       const adAccountsResponse = await fetch(adAccountsUrl);
       const adAccountsData = await adAccountsResponse.json();
-      
+
       if (adAccountsData.error) {
         return res.status(400).json({
           success: false,
@@ -1554,10 +1554,10 @@ app.get("/api/facebook/business/:businessId/adaccounts", async (req, res) => {
               since as string,
               until as string
             );
-            
+
             const insightsResponse = await fetch(insightsUrl);
             const insightsData = await insightsResponse.json();
-            
+
             let analytics: any = {};
             if (!insightsData.error && insightsData.data && insightsData.data.length > 0) {
               analytics = insightsData.data[0];
@@ -1571,19 +1571,19 @@ app.get("/api/facebook/business/:businessId/adaccounts", async (req, res) => {
             const impressions = parseInt(analytics.impressions || 0);
             const reach = parseInt(analytics.reach || 0);
             const conversions = parseInt(analytics.conversions || 0);
-            
+
             // Calculer CTR si manquant
             let ctr = parseFloat(analytics.ctr || 0);
             if (ctr === 0 && impressions > 0 && clicks > 0) {
               ctr = (clicks / impressions) * 100;
             }
-            
+
             // Calculer CPC si manquant
             let cpc = parseFloat(analytics.cpc || 0);
             if (cpc === 0 && clicks > 0 && spend > 0) {
               cpc = spend / clicks;
             }
-            
+
             // Si pas de données d'insights, utiliser des estimations basées sur le spend
             const finalAnalytics = {
               spend: spend,
@@ -1596,7 +1596,7 @@ app.get("/api/facebook/business/:businessId/adaccounts", async (req, res) => {
               cpm: parseFloat(analytics.cpm || 0) || (spend / ((impressions || Math.floor((clicks || Math.floor(spend * 0.02)) * 50)) / 1000)),
               frequency: parseFloat(analytics.frequency || 0) || 1.5
             };
-            
+
 
             return {
               ...account,
@@ -1616,8 +1616,8 @@ app.get("/api/facebook/business/:businessId/adaccounts", async (req, res) => {
               cpm: spend > 0 ? spend / (Math.floor(spend * 1.0) / 1000) : 0,
               frequency: 1.5
             };
-            
-            
+
+
             return {
               ...account,
               analytics: defaultAnalytics
@@ -1626,7 +1626,7 @@ app.get("/api/facebook/business/:businessId/adaccounts", async (req, res) => {
         })
       );
 
-      
+
       res.json({
         success: true,
         data: accountsWithAnalytics,
@@ -1640,9 +1640,9 @@ app.get("/api/facebook/business/:businessId/adaccounts", async (req, res) => {
       });
     }
   } catch (error) {
-    res.status(500).json({ 
-      message: "Internal server error", 
-      success: false 
+    res.status(500).json({
+      message: "Internal server error",
+      success: false
     });
   }
 });
@@ -1653,11 +1653,11 @@ app.get("/api/facebook/detailed-adaccounts", async (req, res) => {
   try {
     const authHeader = req.headers.authorization;
     const token = authHeader ? authHeader.replace('Bearer ', '') : null;
-    
+
     if (!token) {
-      return res.status(401).json({ 
-        message: "No access token provided", 
-        success: false 
+      return res.status(401).json({
+        message: "No access token provided",
+        success: false
       });
     }
 
@@ -1680,9 +1680,9 @@ app.get("/api/facebook/detailed-adaccounts", async (req, res) => {
       .single() as any;
 
     if (tokenError || !tokenRow) {
-      return res.status(404).json({ 
-        message: "No Facebook token found", 
-        success: false 
+      return res.status(404).json({
+        message: "No Facebook token found",
+        success: false
       });
     }
 
@@ -1693,7 +1693,7 @@ app.get("/api/facebook/detailed-adaccounts", async (req, res) => {
         // Essayer d'abord avec des champs de base
         const businessResponse = await fetch(`https://graph.facebook.com/v18.0/me/businesses?access_token=${tokenRow.token}&fields=id,name`);
         businessData = await businessResponse.json();
-        
+
         // Si pas d'erreur, essayer d'ajouter plus de champs
         if (!businessData.error) {
           const extendedResponse = await fetch(`https://graph.facebook.com/v18.0/me/businesses?access_token=${tokenRow.token}&fields=id,name,primary_page,timezone_name,created_time,updated_time`);
@@ -1706,7 +1706,7 @@ app.get("/api/facebook/detailed-adaccounts", async (req, res) => {
         console.error('❌ Error fetching business managers:', error);
         businessData = { data: [] };
       }
-      
+
       // Vérifier s'il y a une erreur dans la réponse
       if (businessData.error) {
         console.error('❌ Facebook API error for business managers:', businessData.error);
@@ -1719,7 +1719,7 @@ app.get("/api/facebook/detailed-adaccounts", async (req, res) => {
         // Essayer d'abord avec des champs de base
         const adAccountsResponse = await fetch(`https://graph.facebook.com/v18.0/me/adaccounts?access_token=${tokenRow.token}&fields=id,name,account_id,currency,account_status,amount_spent`);
         adAccountsData = await adAccountsResponse.json();
-        
+
         // Si pas d'erreur, essayer d'ajouter plus de champs
         if (!adAccountsData.error) {
           const extendedResponse = await fetch(`https://graph.facebook.com/v18.0/me/adaccounts?access_token=${tokenRow.token}&fields=id,name,account_id,currency,account_status,amount_spent,balance,timezone_name,business_name,business_id,created_time`);
@@ -1731,7 +1731,7 @@ app.get("/api/facebook/detailed-adaccounts", async (req, res) => {
       } catch (error) {
         adAccountsData = { data: [] };
       }
-      
+
       // Vérifier s'il y a une erreur dans la réponse
       if (adAccountsData.error) {
         adAccountsData.data = [];
@@ -1754,7 +1754,7 @@ app.get("/api/facebook/detailed-adaccounts", async (req, res) => {
       adAccounts.forEach((account: any) => {
         if (account.business_id && businessMap.has(account.business_id)) {
           businessMap.get(account.business_id).adAccounts.push(account);
-            } else {
+        } else {
           // Si pas de business_id, créer un groupe "Non assigné"
           if (!businessMap.has('unassigned')) {
             businessMap.set('unassigned', {
@@ -1777,23 +1777,23 @@ app.get("/api/facebook/detailed-adaccounts", async (req, res) => {
         totalAdAccounts: adAccounts.length
       };
 
-      return res.json({ 
-        message: "Detailed ad accounts retrieved successfully", 
-        success: true, 
+      return res.json({
+        message: "Detailed ad accounts retrieved successfully",
+        success: true,
         data: result
       });
 
     } catch (error) {
-      return res.status(500).json({ 
-        message: "Error fetching detailed ad accounts", 
+      return res.status(500).json({
+        message: "Error fetching detailed ad accounts",
         success: false,
         error: error.message
       });
     }
 
   } catch (error) {
-    return res.status(500).json({ 
-      message: "Server error", 
+    return res.status(500).json({
+      message: "Server error",
       success: false,
       error: error.message
     });
@@ -1819,14 +1819,14 @@ async function handleStreamingCampaigns(req, res, accountId, facebookToken) {
     let allCampaigns = [];
     let nextUrl = `https://graph.facebook.com/v18.0/${accountId}/campaigns?access_token=${facebookToken}&fields=id,name,status,objective,created_time,updated_time&limit=100`;
     let pageCount = 0;
-    
+
     do {
-      
+
       // Envoyer un événement de progression
-      res.write(`data: ${JSON.stringify({ 
-        type: 'progress', 
-        page: pageCount + 1, 
-        message: `Fetching page ${pageCount + 1}...` 
+      res.write(`data: ${JSON.stringify({
+        type: 'progress',
+        page: pageCount + 1,
+        message: `Fetching page ${pageCount + 1}...`
       })}\n\n`);
 
       const campaignsResponse = await fetch(nextUrl);
@@ -1834,9 +1834,9 @@ async function handleStreamingCampaigns(req, res, accountId, facebookToken) {
 
       if (campaignsData.error) {
         console.error('❌ Facebook API error:', campaignsData.error);
-        res.write(`data: ${JSON.stringify({ 
-          type: 'error', 
-          message: "Facebook API error: " + campaignsData.error.message 
+        res.write(`data: ${JSON.stringify({
+          type: 'error',
+          message: "Facebook API error: " + campaignsData.error.message
         })}\n\n`);
         res.end();
         return;
@@ -1845,7 +1845,7 @@ async function handleStreamingCampaigns(req, res, accountId, facebookToken) {
       // Ajouter les campagnes de cette page avec métriques
       if (campaignsData.data && Array.isArray(campaignsData.data)) {
         allCampaigns = allCampaigns.concat(campaignsData.data);
-        
+
         // Récupérer les métriques pour chaque campagne de cette page
         const campaignsWithMetrics = [];
         for (const campaign of campaignsData.data) {
@@ -1854,9 +1854,9 @@ async function handleStreamingCampaigns(req, res, accountId, facebookToken) {
             const insightsUrl = `https://graph.facebook.com/v18.0/${campaign.id}/insights?access_token=${facebookToken}&fields=spend,impressions,clicks,reach,frequency,cpc,cpm,ctr,conversions&date_preset=last_30d`;
             const insightsResponse = await fetch(insightsUrl);
             const insightsData = await insightsResponse.json();
-            
+
             const insights = insightsData.data?.[0] || {};
-            
+
             campaignsWithMetrics.push({
               ...campaign,
               account_id: accountId,
@@ -1892,10 +1892,10 @@ async function handleStreamingCampaigns(req, res, accountId, facebookToken) {
             });
           }
         }
-        
+
         // Envoyer les campagnes avec métriques au frontend
-        res.write(`data: ${JSON.stringify({ 
-          type: 'campaigns', 
+        res.write(`data: ${JSON.stringify({
+          type: 'campaigns',
           data: campaignsWithMetrics,
           page: pageCount + 1,
           total: allCampaigns.length
@@ -1915,20 +1915,20 @@ async function handleStreamingCampaigns(req, res, accountId, facebookToken) {
 
 
     // Envoyer un événement de fin
-    res.write(`data: ${JSON.stringify({ 
-      type: 'complete', 
+    res.write(`data: ${JSON.stringify({
+      type: 'complete',
       total: allCampaigns.length,
       pages: pageCount,
-      message: 'All campaigns loaded successfully!' 
+      message: 'All campaigns loaded successfully!'
     })}\n\n`);
 
     res.end();
 
   } catch (error) {
     console.error('❌ Error in streaming campaigns:', error);
-    res.write(`data: ${JSON.stringify({ 
-      type: 'error', 
-      message: error.message 
+    res.write(`data: ${JSON.stringify({
+      type: 'error',
+      message: error.message
     })}\n\n`);
     res.end();
   }
@@ -1938,14 +1938,14 @@ app.get("/api/facebook/campaigns/:accountId", async (req, res) => {
   try {
     const { accountId } = req.params;
     const { stream = 'false', token: urlToken } = req.query; // Paramètre pour activer le streaming
-    
+
     const authHeader = req.headers.authorization;
     const token = authHeader ? authHeader.replace('Bearer ', '') : urlToken;
-    
+
     if (!token) {
-      return res.status(401).json({ 
-        message: "No access token provided", 
-        success: false 
+      return res.status(401).json({
+        message: "No access token provided",
+        success: false
       });
     }
 
@@ -1969,9 +1969,9 @@ app.get("/api/facebook/campaigns/:accountId", async (req, res) => {
       .single() as any;
 
     if (tokenError || !tokenRow) {
-      return res.status(404).json({ 
-        message: "No Facebook token found", 
-        success: false 
+      return res.status(404).json({
+        message: "No Facebook token found",
+        success: false
       });
     }
 
@@ -1980,22 +1980,22 @@ app.get("/api/facebook/campaigns/:accountId", async (req, res) => {
       return handleStreamingCampaigns(req, res, accountId, tokenRow.token);
     }
 
-    
-    
+
+
     // Utiliser la pagination pour récupérer TOUTES les campagnes avec les champs de base
     let allCampaigns = [];
     let nextUrl = `https://graph.facebook.com/v18.0/${accountId}/campaigns?access_token=${tokenRow.token}&fields=id,name,status,objective,created_time,updated_time,daily_budget,lifetime_budget,start_time,end_time&limit=100`;
     let pageCount = 0;
-    
+
     do {
       const campaignsResponse = await fetch(nextUrl);
       const campaignsData = await campaignsResponse.json();
 
       if (campaignsData.error) {
         console.error('❌ Facebook API error:', campaignsData.error);
-        return res.status(400).json({ 
-          message: "Facebook API error: " + campaignsData.error.message, 
-          success: false 
+        return res.status(400).json({
+          message: "Facebook API error: " + campaignsData.error.message,
+          success: false
         });
       }
 
@@ -2007,8 +2007,8 @@ app.get("/api/facebook/campaigns/:accountId", async (req, res) => {
       // Vérifier s'il y a une page suivante
       nextUrl = campaignsData.paging?.next || null;
       pageCount++;
-      
-      
+
+
 
       // Limiter le nombre de pages pour éviter les boucles infinies
       if (pageCount >= 50) {
@@ -2018,9 +2018,9 @@ app.get("/api/facebook/campaigns/:accountId", async (req, res) => {
     } while (nextUrl);
 
 
-      // Récupérer les métriques pour chaque campagne
-      const campaignsWithMetrics = [];
-    
+    // Récupérer les métriques pour chaque campagne
+    const campaignsWithMetrics = [];
+
     // Essayer d'abord de récupérer les insights au niveau du compte
     try {
       // Utiliser 'last_30d' par défaut pour la liste des campagnes (plus logique pour voir les dépenses)
@@ -2028,19 +2028,19 @@ app.get("/api/facebook/campaigns/:accountId", async (req, res) => {
       const { date_preset } = req.query;
       const datePreset = date_preset || 'last_30d';
       const accountInsightsUrl = `https://graph.facebook.com/v18.0/${accountId}/insights?access_token=${tokenRow.token}&fields=spend,impressions,clicks,reach,ctr,cpc,cpm,cpp,frequency,actions,conversions,conversion_rate,cost_per_conversion,cost_per_result&date_preset=${datePreset}&level=campaign`;
-      
+
       // Ajouter un timeout pour éviter les blocages
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 30000); // 30 secondes timeout
-      
+
       try {
         const accountInsightsResponse = await fetch(accountInsightsUrl, {
           signal: controller.signal
         });
         clearTimeout(timeoutId);
         const accountInsightsData = await accountInsightsResponse.json();
-      
-        
+
+
         // Créer un map des métriques par campagne
         const metricsMap = new Map();
         if (accountInsightsData.data && accountInsightsData.data.length > 0) {
@@ -2050,18 +2050,18 @@ app.get("/api/facebook/campaigns/:accountId", async (req, res) => {
             }
           }
         }
-        
-        
+
+
         // Appliquer les métriques aux campagnes
         for (const campaign of allCampaigns || []) {
           const campaignMetrics = metricsMap.get(campaign.id) || {};
-          
+
           // Extraire les actions spécifiques comme dans Facebook Ads Manager
           let totalConversions = 0;
           let messagingConnections = 0;
           let omniPurchases = 0;
           let costPerResult = 0;
-          
+
           if (campaignMetrics.actions && Array.isArray(campaignMetrics.actions)) {
             for (const action of campaignMetrics.actions) {
               if (action.action_type === 'onsite_conversion.total_messaging_connection') {
@@ -2072,13 +2072,13 @@ app.get("/api/facebook/campaigns/:accountId", async (req, res) => {
             }
             totalConversions = messagingConnections + omniPurchases;
           }
-          
+
           // Utiliser cost_per_result si disponible, sinon calculer
           costPerResult = parseFloat(campaignMetrics.cost_per_result || 0);
           if (costPerResult === 0 && totalConversions > 0) {
             costPerResult = parseFloat(campaignMetrics.spend || 0) / totalConversions;
           }
-          
+
           campaignsWithMetrics.push({
             ...campaign,
             account_id: accountId,
@@ -2098,16 +2098,16 @@ app.get("/api/facebook/campaigns/:accountId", async (req, res) => {
             cost_per_result: costPerResult,
             conversion_rate: campaignMetrics.clicks > 0 ? (totalConversions / campaignMetrics.clicks) * 100 : 0
           });
-          
+
         }
-        
+
         // Retourner les données avec métriques du compte
-        return res.json({ 
-          message: "Campaigns with metrics retrieved successfully", 
-          success: true, 
+        return res.json({
+          message: "Campaigns with metrics retrieved successfully",
+          success: true,
           data: campaignsWithMetrics
         });
-        
+
       } catch (fetchError) {
         clearTimeout(timeoutId);
         if (fetchError.name === 'AbortError') {
@@ -2118,25 +2118,25 @@ app.get("/api/facebook/campaigns/:accountId", async (req, res) => {
           throw fetchError;
         }
       }
-      
+
     } catch (accountInsightsError) {
       console.error('❌ Error fetching account insights:', accountInsightsError);
-      
+
       // Fallback: récupérer les métriques campagne par campagne
       // Traiter TOUTES les campagnes par lots de 50 pour éviter les blocages
       const batchSize = 50;
       const totalBatches = Math.ceil(allCampaigns.length / batchSize);
-      
+
       for (let batchIndex = 0; batchIndex < totalBatches; batchIndex++) {
         const startIndex = batchIndex * batchSize;
         const endIndex = Math.min(startIndex + batchSize, allCampaigns.length);
         const batchCampaigns = allCampaigns.slice(startIndex, endIndex);
-        
+
         // Ajouter un délai entre les lots pour éviter les rate limits
         if (batchIndex > 0) {
           await new Promise(resolve => setTimeout(resolve, 5000));
         }
-        
+
         for (let i = 0; i < batchCampaigns.length; i++) {
           const campaign = batchCampaigns[i];
           try {
@@ -2144,72 +2144,72 @@ app.get("/api/facebook/campaigns/:accountId", async (req, res) => {
             if (i > 0) {
               await new Promise(resolve => setTimeout(resolve, 1000));
             }
-            
-          // Récupérer les insights (métriques) pour chaque campagne
+
+            // Récupérer les insights (métriques) pour chaque campagne
             const insightsUrl = `https://graph.facebook.com/v18.0/${campaign.id}/insights?access_token=${tokenRow.token}&fields=spend,impressions,clicks,reach,ctr,cpc,cpm,cpp,frequency,actions,conversions,conversion_rate,cost_per_conversion&date_preset=${datePreset}`;
-          const insightsResponse = await fetch(insightsUrl);
-          const insightsData = await insightsResponse.json();
-            
-          
-          const insights = insightsData.data?.[0] || {};
-            
+            const insightsResponse = await fetch(insightsUrl);
+            const insightsData = await insightsResponse.json();
+
+
+            const insights = insightsData.data?.[0] || {};
+
             // Vérifier si on a des données d'insights
             if (insightsData.data && insightsData.data.length > 0) {
             } else {
               console.log(`⚠️ No insights data for ${campaign.name}, using zeros`);
             }
-          
-          campaignsWithMetrics.push({
-            ...campaign,
-            account_id: accountId,
-            // Métriques principales
-            spend: parseFloat(insights.spend || 0),
-            impressions: parseInt(insights.impressions || 0),
-            clicks: parseInt(insights.clicks || 0),
-            reach: parseInt(insights.reach || 0),
-            conversions: parseInt(insights.conversions || 0),
-            // Métriques calculées
-            ctr: parseFloat(insights.ctr || 0),
-            cpc: parseFloat(insights.cpc || 0),
-            cpm: parseFloat(insights.cpm || 0),
-            frequency: parseFloat(insights.frequency || 0),
-            conversion_rate: insights.clicks > 0 ? (insights.conversions / insights.clicks) * 100 : 0
-          });
-          
-        } catch (insightsError) {
-          // Ajouter la campagne sans métriques
-          campaignsWithMetrics.push({
-            ...campaign,
-            account_id: accountId,
-            spend: 0,
-            impressions: 0,
-            clicks: 0,
-            reach: 0,
-            conversions: 0,
-            ctr: 0,
-            cpc: 0,
-            cpm: 0,
-            frequency: 0,
-            conversion_rate: 0
-          });
+
+            campaignsWithMetrics.push({
+              ...campaign,
+              account_id: accountId,
+              // Métriques principales
+              spend: parseFloat(insights.spend || 0),
+              impressions: parseInt(insights.impressions || 0),
+              clicks: parseInt(insights.clicks || 0),
+              reach: parseInt(insights.reach || 0),
+              conversions: parseInt(insights.conversions || 0),
+              // Métriques calculées
+              ctr: parseFloat(insights.ctr || 0),
+              cpc: parseFloat(insights.cpc || 0),
+              cpm: parseFloat(insights.cpm || 0),
+              frequency: parseFloat(insights.frequency || 0),
+              conversion_rate: insights.clicks > 0 ? (insights.conversions / insights.clicks) * 100 : 0
+            });
+
+          } catch (insightsError) {
+            // Ajouter la campagne sans métriques
+            campaignsWithMetrics.push({
+              ...campaign,
+              account_id: accountId,
+              spend: 0,
+              impressions: 0,
+              clicks: 0,
+              reach: 0,
+              conversions: 0,
+              ctr: 0,
+              cpc: 0,
+              cpm: 0,
+              frequency: 0,
+              conversion_rate: 0
+            });
           }
         }
       }
 
       // Retourner les données avec métriques du fallback
-      return res.json({ 
-        message: "Campaigns with metrics retrieved successfully (fallback)", 
-        success: true, 
+      return res.json({
+        message: "Campaigns with metrics retrieved successfully (fallback)",
+        success: true,
         data: campaignsWithMetrics
       });
     }
 
   } catch (error) {
     console.error('Error in /api/facebook/campaigns:', error);
-    res.status(500).json({ 
-      message: "Internal server error", 
-      error: error.message, 
-      success: false 
+    res.status(500).json({
+      message: "Internal server error",
+      error: error.message,
+      success: false
     });
   }
 });
@@ -2218,11 +2218,11 @@ app.get("/api/facebook/status", async (req, res) => {
   try {
     const authHeader = req.headers.authorization;
     const token = authHeader ? authHeader.replace('Bearer ', '') : null;
-    
+
     if (!token) {
-      return res.status(401).json({ 
-        message: "No access token provided", 
-        success: false 
+      return res.status(401).json({
+        message: "No access token provided",
+        success: false
       });
     }
 
@@ -2245,9 +2245,9 @@ app.get("/api/facebook/status", async (req, res) => {
       .single() as any;
 
     if (tokenError || !tokenRow) {
-      return res.json({ 
-        message: "No Facebook token found", 
-        success: true, 
+      return res.json({
+        message: "No Facebook token found",
+        success: true,
         hasToken: false,
         data: null
       });
@@ -2259,17 +2259,17 @@ app.get("/api/facebook/status", async (req, res) => {
       const testData = await testResponse.json();
 
       if (testData.error) {
-        return res.json({ 
-          message: "Facebook token is invalid", 
-          success: true, 
+        return res.json({
+          message: "Facebook token is invalid",
+          success: true,
           hasToken: false,
           data: null
         });
       }
 
-      return res.json({ 
-        message: "Facebook token is valid", 
-        success: true, 
+      return res.json({
+        message: "Facebook token is valid",
+        success: true,
         hasToken: true,
         data: {
           id: tokenRow.id,
@@ -2281,9 +2281,9 @@ app.get("/api/facebook/status", async (req, res) => {
 
     } catch (error) {
       console.error('Error testing Facebook token:', error);
-      return res.json({ 
-        message: "Error testing Facebook token", 
-        success: true, 
+      return res.json({
+        message: "Error testing Facebook token",
+        success: true,
         hasToken: false,
         data: null
       });
@@ -2291,10 +2291,10 @@ app.get("/api/facebook/status", async (req, res) => {
 
   } catch (error) {
     console.error('Error in /api/facebook/status:', error);
-    res.status(500).json({ 
-      message: "Internal server error", 
-      error: error.message, 
-      success: false 
+    res.status(500).json({
+      message: "Internal server error",
+      error: error.message,
+      success: false
     });
   }
 });
@@ -2319,20 +2319,20 @@ const PORT = process.env.PORT || 5000;
 
 app.listen(PORT, () => {
   console.log(`✅ Server running at http://localhost:${PORT}`);
-  
+
   // Démarrer les services
   console.log('🚀 Starting background services...');
   startScheduleService().catch(err => {
     console.error('❌ Error starting schedule service:', err);
   });
-  
+
   // ❌ Service traditionnel désactivé - Utilisation du service optimisé uniquement
   // startStopLossService();
-  
+
   // Démarrer le service stop-loss optimisé (utilise Meta Batch API)
   optimizedStopLossService.initialize().catch(err => {
     console.error('❌ Error initializing optimized stop-loss service:', err);
   });
-  
+
   console.log('✅ All background services started');
 });

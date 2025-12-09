@@ -1,5 +1,6 @@
 import { Request, Response } from "../types/express.js";
 import { supabase } from "../supabaseClient.js";
+import { createClient } from "@supabase/supabase-js";
 import axios from "axios";
 
 // Interface pour le token Facebook
@@ -21,12 +22,194 @@ async function createLog(userId: string, action: string, details: any) {
                 action,
                 details
             } as any);
-        
+
         if (error) {
             console.error('Error creating log:', error);
         }
     } catch (error) {
         console.error('Error creating log:', error);
+    }
+}
+
+// Fonction pour obtenir un client Supabase Admin (avec SERVICE_ROLE_KEY pour contourner RLS)
+function getSupabaseAdminClient() {
+    const url = process.env.SUPABASE_URL;
+    const key = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY;
+
+    if (!url || !key) {
+        throw new Error('SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required');
+    }
+
+    return createClient(url, key, {
+        auth: {
+            autoRefreshToken: false,
+            persistSession: false
+        }
+    });
+}
+
+// Fonction pour s'assurer que l'utilisateur existe dans la table users
+// Utilise SERVICE_ROLE_KEY pour contourner RLS (Row Level Security)
+async function ensureUserExists(userId: string, userEmail?: string, userName?: string): Promise<void> {
+    try {
+        // Créer un client admin pour contourner RLS
+        const supabaseAdmin = getSupabaseAdminClient();
+
+        // Vérifier si la table users publique existe en essayant une requête simple
+        const { error: checkError } = await supabaseAdmin
+            .from('users')
+            .select('id')
+            .limit(1);
+
+        // Si la table n'existe pas (erreur 42P01 = relation does not exist), on ne fait rien
+        // Cela signifie que la contrainte pointe probablement vers auth.users
+        if (checkError) {
+            if (checkError.code === '42P01' ||
+                checkError.message?.includes('does not exist') ||
+                checkError.message?.includes('relation') ||
+                checkError.code === 'PGRST301') {
+                // La table users publique n'existe pas, la contrainte pointe probablement vers auth.users
+                // L'utilisateur existe déjà dans auth.users puisqu'il est authentifié, donc on n'a rien à faire
+                return;
+            }
+            // Autre erreur, on continue quand même
+        }
+
+        // Si la table existe, vérifier si l'utilisateur existe déjà
+        // NOTE: Vérifier aussi dans auth.users car la contrainte peut pointer vers auth.users
+        const { data: existingUser, error: userCheckError } = await supabaseAdmin
+            .from('users')
+            .select('id')
+            .eq('id', userId)
+            .single();
+
+        // Si l'utilisateur existe dans la table users publique, on peut continuer
+        if (existingUser) {
+            console.log('✅ User already exists in public.users table');
+            return;
+        }
+
+        // Si l'erreur n'est pas "not found", c'est une vraie erreur
+        if (userCheckError && userCheckError.code !== 'PGRST116') {
+            // Si c'est une erreur de table inexistante, on ignore
+            if (userCheckError.code === '42P01' || userCheckError.message?.includes('does not exist')) {
+                return;
+            }
+            console.error('Error checking user existence:', userCheckError);
+            return;
+        }
+
+        // Vérifier si l'utilisateur existe dans auth.users (via RPC)
+        // Si oui, la contrainte pointe probablement vers auth.users, pas vers la table users publique
+        try {
+            const { data: rpcData, error: rpcError } = await supabaseAdmin.rpc('get_all_users');
+            if (!rpcError && rpcData && Array.isArray(rpcData)) {
+                const authUser = (rpcData as any[]).find((u: any) => u.id === userId);
+                if (authUser) {
+                    console.log('✅ User exists in auth.users - foreign key constraint likely points to auth.users, not public.users');
+                    console.log('⚠️ No need to create user in public.users table');
+                    // Si l'utilisateur existe dans auth.users, la contrainte devrait pointer vers auth.users
+                    // On ne devrait pas avoir besoin de créer l'utilisateur dans public.users
+                    // Mais si la contrainte pointe vers public.users, on doit le créer
+                    // Pour l'instant, on continue pour créer l'utilisateur dans public.users
+                }
+            }
+        } catch (rpcError) {
+            // RPC non disponible, continuer
+        }
+
+        // L'utilisateur n'existe pas dans la table users publique, on doit le créer
+        // Récupérer les infos depuis auth.users si possible
+        let email = userEmail;
+        let name = userName;
+
+        // Essayer de récupérer depuis auth.users via RPC (toujours, même si on a déjà email/name)
+        try {
+            const { data: rpcData, error: rpcError } = await supabaseAdmin.rpc('get_all_users');
+            if (!rpcError && rpcData && Array.isArray(rpcData)) {
+                const authUser = (rpcData as any[]).find((u: any) => u.id === userId);
+                if (authUser) {
+                    // Prioriser l'email depuis auth.users (plus fiable)
+                    email = email || authUser.email || null;
+                    name = name || authUser.user_metadata?.name || authUser.user_metadata?.full_name || authUser.user_metadata?.full_name || email?.split('@')[0] || 'User';
+                }
+            } else if (rpcError) {
+                console.warn('⚠️ Error calling get_all_users RPC:', rpcError);
+            }
+        } catch (rpcError) {
+            console.warn('⚠️ RPC get_all_users not available:', rpcError);
+        }
+
+        // Vérifier que l'email n'est pas null (contrainte NOT NULL dans la table users)
+        if (!email) {
+            console.error('❌ Cannot create user: email is required but not found');
+            console.error('❌ UserId:', userId, 'UserEmail:', userEmail, 'UserName:', userName);
+            throw new Error('Email is required to create user in users table. Please ensure the user has an email in auth.users.');
+        }
+
+        // Créer l'utilisateur dans la table users publique avec le client admin (contourne RLS)
+        // NOTE: La table users a une colonne password NOT NULL, mais l'authentification se fait via auth.users
+        // On génère un mot de passe factice car il n'est pas utilisé pour l'authentification
+        // L'utilisateur s'authentifie via Supabase Auth (auth.users), pas via la table users publique
+        const dummyPassword = `auth_user_${userId.substring(0, 8)}_${Date.now()}`;
+
+        const { error: insertError } = await supabaseAdmin
+            .from('users')
+            .insert({
+                id: userId,
+                email: email,  // email ne peut plus être null ici
+                name: name || email.split('@')[0] || 'User',
+                password: dummyPassword,  // Mot de passe factice (non utilisé pour l'authentification)
+                created_at: new Date().toISOString(),
+                updated_at: new Date().toISOString()
+            } as any);
+
+        if (insertError) {
+            // Si l'erreur est une violation de contrainte unique, l'utilisateur existe déjà (race condition)
+            if (insertError.code === '23505') {
+                console.log('✅ User already exists in users table (race condition)');
+                return; // L'utilisateur a été créé entre-temps, c'est OK
+            }
+            // Si la table n'existe pas, on ignore l'erreur
+            if (insertError.code === '42P01' || insertError.message?.includes('does not exist')) {
+                console.log('⚠️ Table users does not exist, skipping user creation');
+                return;
+            }
+            // Si c'est une erreur RLS (42501), cela signifie que le SERVICE_ROLE_KEY n'est pas configuré correctement
+            if (insertError.code === '42501') {
+                console.error('❌ RLS Error: SERVICE_ROLE_KEY may not be configured correctly or RLS policies are blocking the insert');
+                console.error('💡 Solution: Ensure SUPABASE_SERVICE_ROLE_KEY is set in backend/.env');
+                throw insertError; // Lancer l'erreur pour qu'elle soit gérée par le catch
+            }
+            // Si c'est une erreur de contrainte NOT NULL (23502), on doit corriger les données
+            if (insertError.code === '23502') {
+                console.error('❌ NOT NULL constraint error:', insertError.details);
+                throw insertError; // Lancer l'erreur pour qu'elle soit gérée par le catch
+            }
+            console.error('❌ Error creating user in users table:', insertError);
+            throw insertError; // Lancer l'erreur pour qu'elle soit gérée par le catch
+        }
+
+        // Vérifier que l'utilisateur a bien été créé
+        const { data: verifyUser, error: verifyError } = await supabaseAdmin
+            .from('users')
+            .select('id')
+            .eq('id', userId)
+            .single();
+
+        if (verifyError || !verifyUser) {
+            console.error('❌ User was not created successfully:', verifyError);
+            throw new Error(`Failed to create user in users table: ${verifyError?.message || 'User not found after insert'}`);
+        }
+
+        console.log('✅ User successfully created in users table:', userId);
+    } catch (error: any) {
+        // Si c'est une erreur de table inexistante, on ignore
+        if (error?.code === '42P01' || error?.message?.includes('does not exist')) {
+            return;
+        }
+        console.error('Error in ensureUserExists:', error);
+        // On continue quand même pour ne pas bloquer l'insertion du token
     }
 }
 
@@ -39,12 +222,14 @@ function normalizeAdStatus(status: string | undefined | null): string {
 
 // Fonction utilitaire pour récupérer le token Facebook
 export async function getFacebookToken(userId: string): Promise<FacebookToken> {
+    // IMPORTANT: Supabase/PostgREST expose la colonne comme userId (camelCase) même si dans PostgreSQL c'est userid (lowercase)
+    // Utiliser userId (camelCase) car c'est ce que Supabase/PostgREST attend
     const { data: tokenRow, error: tokenError } = await supabase
         .from('access_tokens')
         .select('*')
-        .eq('userId', userId)
+        .eq('userId', userId)  // Utiliser userId (camelCase) - Supabase/PostgREST convertit automatiquement
         .single();
-    
+
     if (tokenError) {
         console.error(`❌ [getFacebookToken] Database error for userId ${userId}:`, {
             code: tokenError.code,
@@ -52,7 +237,7 @@ export async function getFacebookToken(userId: string): Promise<FacebookToken> {
             details: tokenError.details,
             hint: tokenError.hint
         });
-        
+
         if (tokenError.code !== 'PGRST116') {
             throw new Error(`Database error: ${tokenError.message}`);
         } else {
@@ -72,9 +257,9 @@ export async function getFacebookToken(userId: string): Promise<FacebookToken> {
 
 // Fonction utilitaire pour appeler l'API Facebook avec support AbortController, retry et rate limiting
 export async function fetchFbGraph(
-    accessToken: string, 
-    endpoint: string = 'me', 
-    signal?: AbortSignal, 
+    accessToken: string,
+    endpoint: string = 'me',
+    signal?: AbortSignal,
     userId?: string,
     options: {
         maxRetries?: number;
@@ -114,7 +299,7 @@ export async function fetchFbGraph(
             if (!signal && userId) {
                 localController = new AbortController();
                 finalSignal = localController.signal;
-                
+
                 // Enregistrer le controller dans la map des requêtes actives
                 const userRequests = activeRequests.get(userId) || [];
                 userRequests.push(localController);
@@ -179,18 +364,18 @@ export async function fetchFbGraph(
             // Gestion des rate limits (code 17 ou 4)
             if (errorCode === 17 || errorCode === 4 || statusCode === 429) {
                 console.warn(`⚠️ [RATE LIMIT] Rate limit hit (code ${errorCode}), attempt ${attempt + 1}/${maxRetries}`);
-                
+
                 if (userId) {
                     const backoffDelay = rateLimitManager.getBackoffDelay(userId);
                     rateLimitManager.incrementBackoff(userId);
-                    
+
                     if (attempt < maxRetries) {
                         console.log(`⏳ [RATE LIMIT] Waiting ${backoffDelay}ms before retry...`);
                         await new Promise(resolve => setTimeout(resolve, backoffDelay));
                         continue; // Retry
                     }
                 }
-                
+
                 // Si on a épuisé les tentatives, throw une erreur spécifique
                 throw new Error(`Rate limit exceeded. Please wait before making more requests.`);
             }
@@ -246,7 +431,7 @@ export async function fetchFbGraphPaginated(accessToken: string, endpoint: strin
         let allData: any[] = [];
         let nextUrl: string | null = null;
         let pageCount = 0;
-        
+
         // Construire l'URL initiale avec limit=100 pour récupérer plus de résultats par page
         const baseUrl = `https://graph.facebook.com/v18.0/${endpoint}`;
         const separator = endpoint.includes('?') ? '&' : '?';
@@ -270,7 +455,7 @@ export async function fetchFbGraphPaginated(accessToken: string, endpoint: strin
             });
 
             const responseData = response.data;
-            
+
             // Ajouter les données de cette page
             if (responseData.data && Array.isArray(responseData.data)) {
                 allData = allData.concat(responseData.data);
@@ -309,10 +494,12 @@ export async function fetchFbGraphPaginated(accessToken: string, endpoint: strin
 export async function saveAccessToken(req: Request, res: Response) {
     try {
 
-        // Récupérer l'userId depuis le token JWT dans les headers
+        // Récupérer l'userId et l'email depuis le token JWT dans les headers
         let userId = req.user?.id;
-        
-        if (!userId) {
+        let userEmail = req.user?.email;
+        let userName = req.user?.name;
+
+        if (!userId || !userEmail) {
             // Essayer de décoder le token JWT depuis les headers
             const rawAuth = req.headers?.authorization;
             const authHeader = Array.isArray(rawAuth) ? rawAuth[0] : rawAuth;
@@ -321,13 +508,15 @@ export async function saveAccessToken(req: Request, res: Response) {
                     const token = authHeader.replace('Bearer ', '');
                     // Décoder le JWT (partie payload)
                     const payload = JSON.parse(Buffer.from(token.split('.')[1], 'base64').toString());
-                    userId = payload.sub; // Le 'sub' contient l'userId
+                    userId = userId || payload.sub; // Le 'sub' contient l'userId
+                    userEmail = userEmail || payload.email; // L'email peut être dans le payload
+                    userName = userName || payload.name || payload.user_metadata?.name || payload.user_metadata?.full_name;
                 } catch (error) {
                     console.error('❌ Error decoding JWT:', error);
                 }
             }
         }
-        
+
         // Fallback si pas d'userId trouvé
         if (!userId) {
             userId = req.body.userId || 'temp_user';
@@ -340,10 +529,11 @@ export async function saveAccessToken(req: Request, res: Response) {
         }
 
         // Vérifier si un token existe déjà pour cet utilisateur
+        // Utiliser userid (lowercase) car c'est ce qui fonctionne pour l'insertion
         const { data: existingToken, error: existingTokenError } = await supabase
             .from('access_tokens')
             .select('*')
-            .eq('userId', userId)
+            .eq('userId', userId)  // Utiliser userId (camelCase) - Supabase/PostgREST convertit automatiquement
             .single();
         if (existingTokenError && existingTokenError.code !== 'PGRST116') {
             console.error('❌ Error checking existing token:', existingTokenError);
@@ -359,20 +549,20 @@ export async function saveAccessToken(req: Request, res: Response) {
                 status: error.response?.status,
                 data: error.response?.data
             });
-            
+
             // Gestion spécifique des erreurs Facebook
             if (error.response?.status === 403) {
                 const fbError = error.response?.data?.error;
                 if (fbError?.code === 4) {
-                    return res.status(429).json({ 
+                    return res.status(429).json({
                         message: "Facebook API rate limit reached. Please try again in a few minutes.",
                         error: "RATE_LIMIT",
                         retryAfter: 1800 // 30 minutes
                     });
                 }
             }
-            
-            return res.status(400).json({ 
+
+            return res.status(400).json({
                 message: "Failed to validate access token with Facebook",
                 error: error.response?.data?.error?.message || error.message
             });
@@ -382,12 +572,12 @@ export async function saveAccessToken(req: Request, res: Response) {
         if (existingToken) {
             const { error: updateError } = await (supabase as any)
                 .from('access_tokens')
-                .update({ 
+                .update({
                     token: accessToken,
                     scopes: req.body.scopes || null,
                     meta: fbData || null
                 })
-                .eq('userId', userId);
+                .eq('userId', userId)  // Utiliser userId (camelCase) - Supabase/PostgREST convertit automatiquement
 
             if (updateError) {
                 console.error('❌ Update error:', updateError);
@@ -400,32 +590,228 @@ export async function saveAccessToken(req: Request, res: Response) {
                 .select('*')
                 .eq('token', accessToken)
                 .single();
-            
+
             if (existingTokenByValue) {
-                // Mettre à jour l'userId du token existant
+                // Mettre à jour l'userid du token existant
                 const { error: updateUserIdError } = await (supabase as any)
                     .from('access_tokens')
-                    .update({ userId: userId })
+                    .update({ userId: userId })  // Utiliser userId (camelCase) - Supabase/PostgREST convertit automatiquement
                     .eq('token', accessToken);
-                
+
                 if (updateUserIdError) {
                     console.error('❌ Update userId error:', updateUserIdError);
                     return res.status(500).json({ message: 'Database error' });
                 }
             } else {
+                // IMPORTANT: La contrainte FK access_tokens_userId_fkey peut pointer vers public.users OU auth.users
+                // S'assurer que l'utilisateur existe dans public.users si la contrainte pointe vers cette table
+                try {
+                    await ensureUserExists(userId, userEmail, userName);
+                } catch (ensureError) {
+                    // Si ensureUserExists échoue, on continue quand même
+                    // car la contrainte pointe peut-être vers auth.users où l'utilisateur existe déjà
+                    console.warn('⚠️ ensureUserExists failed, continuing anyway:', ensureError);
+                }
+
                 // Créer un nouveau token
+                // IMPORTANT: Supabase/PostgREST expose la colonne comme userId (camelCase)
                 const { error: insertError } = await supabase
                     .from('access_tokens')
                     .insert({
-                        userId: userId,
+                        userId: userId,  // Utiliser userId (camelCase) - Supabase/PostgREST convertit automatiquement
                         token: accessToken,
                         scopes: req.body.scopes || null,
                         meta: fbData || null
-                    } as any);
+                    } as any)
+                    .select();  // Forcer la génération de l'ID
 
                 if (insertError) {
                     console.error('❌ Insert error:', insertError);
-                    return res.status(500).json({ message: 'Database error' });
+                    console.error('❌ Insert error details:', {
+                        code: insertError.code,
+                        message: insertError.message,
+                        details: insertError.details,
+                        hint: insertError.hint
+                    });
+
+                    // Si c'est une erreur de clé étrangère (23503), l'utilisateur n'existe pas dans la table référencée
+                    if (insertError.code === '23503') {
+                        console.log('⚠️ Foreign key constraint error - user may not exist in referenced table');
+                        console.log('⚠️ Checking if user exists in auth.users...');
+
+                        // Vérifier d'abord si l'utilisateur existe dans auth.users
+                        const supabaseAdmin = getSupabaseAdminClient();
+                        const { data: rpcData, error: rpcError } = await supabaseAdmin.rpc('get_all_users');
+                        let userExistsInAuth = false;
+
+                        if (!rpcError && rpcData && Array.isArray(rpcData)) {
+                            const authUser = (rpcData as any[]).find((u: any) => u.id === userId);
+                            if (authUser) {
+                                userExistsInAuth = true;
+                                console.log('✅ User exists in auth.users');
+                                console.log('⚠️ The foreign key constraint likely points to auth.users');
+                                console.log('⚠️ Since user exists in auth.users, the constraint should be satisfied');
+                                console.log('⚠️ Trying to insert with admin client to bypass RLS...');
+
+                                // IMPORTANT: Utiliser userId (camelCase) - Supabase/PostgREST convertit automatiquement userid en userId
+                                // IMPORTANT: Supabase/PostgREST expose la colonne comme userId (camelCase)
+                                const { error: adminInsertError } = await supabaseAdmin
+                                    .from('access_tokens')
+                                    .insert({
+                                        userId: userId,  // Utiliser userId (camelCase) - Supabase/PostgREST convertit automatiquement
+                                        token: accessToken,
+                                        scopes: req.body.scopes || null,
+                                        meta: fbData || null
+                                    } as any)
+                                    .select();  // Forcer la génération de l'ID
+
+                                if (!adminInsertError) {
+                                    console.log('✅ Token successfully inserted with admin client using userid');
+                                    await createLog(userId, "TOKEN_SAVED", { fbData });
+                                    return res.json({ message: "Access token saved successfully", fbData });
+                                } else {
+                                    console.error('❌ Insert error even with admin client:', adminInsertError);
+
+                                    // Si l'erreur est PGRST204 (colonne non trouvée), essayer avec userid (lowercase)
+                                    if (adminInsertError.code === 'PGRST204') {
+                                        // Si userId ne fonctionne pas, essayer avec userid (lowercase) comme fallback
+                                        console.log('⚠️ Column userId not found, trying with userid (lowercase) as fallback...');
+                                        const { error: lowercaseError } = await supabaseAdmin
+                                            .from('access_tokens')
+                                            .insert({
+                                                userId: userId,  // Utiliser userId (camelCase) - Supabase/PostgREST convertit automatiquement
+                                                token: accessToken,
+                                                scopes: req.body.scopes || null,
+                                                meta: fbData || null
+                                            } as any)
+                                            .select();  // Forcer la génération de l'ID
+
+                                        if (!lowercaseError) {
+                                            console.log('✅ Token successfully inserted with userid (lowercase fallback)');
+                                            await createLog(userId, "TOKEN_SAVED", { fbData });
+                                            return res.json({ message: "Access token saved successfully", fbData });
+                                        } else {
+                                            // Si c'est une erreur de duplicate key (23505), le token existe déjà, on le met à jour
+                                            if (lowercaseError.code === '23505') {
+                                                console.log('⚠️ Token already exists, updating instead of inserting...');
+                                                const { error: updateError } = await supabaseAdmin
+                                                    .from('access_tokens')
+                                                    .update({
+                                                        userId: userId,  // Utiliser userId (camelCase) - Supabase/PostgREST convertit automatiquement
+                                                        scopes: req.body.scopes || null,
+                                                        meta: fbData || null
+                                                    } as any)
+                                                    .eq('token', accessToken);
+
+                                                if (!updateError) {
+                                                    console.log('✅ Token successfully updated');
+                                                    await createLog(userId, "TOKEN_SAVED", { fbData });
+                                                    return res.json({ message: "Access token saved successfully", fbData });
+                                                } else {
+                                                    console.error('❌ Update error:', updateError);
+                                                    return res.status(500).json({
+                                                        message: 'Database error: Could not update existing token',
+                                                        details: updateError.details || updateError.message
+                                                    });
+                                                }
+                                            }
+
+                                            console.error('❌ Insert error with userid fallback:', lowercaseError);
+                                            return res.status(500).json({
+                                                message: 'Database error: Column name issue',
+                                                details: lowercaseError.details || lowercaseError.message,
+                                                hint: 'Neither userId nor userid column found. Please check the actual column name in the access_tokens table and refresh Supabase schema cache.'
+                                            });
+                                        }
+                                    } else if (adminInsertError.code === '23505') {
+                                        // Token existe déjà, on le met à jour
+                                        console.log('⚠️ Token already exists, updating instead of inserting...');
+                                        const { error: updateError } = await supabaseAdmin
+                                            .from('access_tokens')
+                                            .update({
+                                                userId: userId,  // Utiliser userId (camelCase) - Supabase/PostgREST convertit automatiquement
+                                                scopes: req.body.scopes || null,
+                                                meta: fbData || null
+                                            } as any)
+                                            .eq('token', accessToken);
+
+                                        if (!updateError) {
+                                            console.log('✅ Token successfully updated');
+                                            await createLog(userId, "TOKEN_SAVED", { fbData });
+                                            return res.json({ message: "Access token saved successfully", fbData });
+                                        } else {
+                                            console.error('❌ Update error:', updateError);
+                                            return res.status(500).json({
+                                                message: 'Database error: Could not update existing token',
+                                                details: updateError.details || updateError.message
+                                            });
+                                        }
+                                    } else if (adminInsertError.code === '23503') {
+                                        // Contrainte de clé étrangère - l'utilisateur n'existe toujours pas
+                                        return res.status(500).json({
+                                            message: 'Database error: Foreign key constraint violation',
+                                            details: adminInsertError.details || adminInsertError.message,
+                                            hint: 'The user exists in auth.users but the foreign key constraint still fails. The constraint may point to public.users. Please check the constraint definition.'
+                                        });
+                                    } else {
+                                        return res.status(500).json({
+                                            message: 'Database error: Could not insert token',
+                                            details: adminInsertError.details || adminInsertError.message,
+                                            code: adminInsertError.code
+                                        });
+                                    }
+                                }
+                            }
+                        }
+
+                        // IMPORTANT: La contrainte FK pointe vers public.users, pas auth.users
+                        // Si l'utilisateur n'existe pas dans auth.users, on doit le créer dans public.users
+                        if (!userExistsInAuth) {
+                            console.log('⚠️ User does not exist in auth.users, but constraint points to public.users');
+                            console.log('⚠️ Attempting to create user in public.users...');
+                            try {
+                                await ensureUserExists(userId, userEmail, userName);
+                                console.log('✅ User creation completed, retrying token insert...');
+
+                                // Réessayer l'insertion avec le client admin
+                                const { error: retryError } = await supabaseAdmin
+                                    .from('access_tokens')
+                                    .insert({
+                                        userId: userId,  // Utiliser userId (camelCase) - Supabase/PostgREST convertit automatiquement
+                                        token: accessToken,
+                                        scopes: req.body.scopes || null,
+                                        meta: fbData || null
+                                    } as any)
+                                    .select();
+
+                                if (!retryError) {
+                                    console.log('✅ Token successfully inserted after user creation');
+                                    await createLog(userId, "TOKEN_SAVED", { fbData });
+                                    return res.json({ message: "Access token saved successfully", fbData });
+                                } else {
+                                    console.error('❌ Insert error after user creation:', retryError);
+                                    return res.status(500).json({
+                                        message: 'Database error: Could not insert token after user creation',
+                                        details: retryError.details || retryError.message,
+                                        code: retryError.code
+                                    });
+                                }
+                            } catch (ensureError: any) {
+                                console.error('❌ Error ensuring user exists:', ensureError);
+                                return res.status(500).json({
+                                    message: 'Database error: Could not create user in users table',
+                                    details: ensureError?.message || ensureError?.details || insertError.details || insertError.message,
+                                    hint: 'Please check if the users table exists, if all required columns are provided, and if RLS policies allow insertion with SERVICE_ROLE_KEY.'
+                                });
+                            }
+                        }
+                    } else {
+                        return res.status(500).json({
+                            message: 'Database error',
+                            details: insertError.message,
+                            code: insertError.code
+                        });
+                    }
                 }
             }
         }
@@ -434,8 +820,18 @@ export async function saveAccessToken(req: Request, res: Response) {
         return res.json({ message: "Access token saved successfully", fbData });
 
     } catch (error: any) {
-        console.error('Error saving access token:', error);
-        return res.status(500).json({ message: error.message || "Server error" });
+        console.error('❌ Error saving access token:', error);
+        console.error('❌ Error stack:', error.stack);
+        console.error('❌ Error details:', {
+            message: error.message,
+            code: error.code,
+            details: error.details,
+            hint: error.hint
+        });
+        return res.status(500).json({
+            message: error.message || "Server error",
+            details: error.details || error.hint || "An unexpected error occurred while saving the access token"
+        });
     }
 }
 
@@ -461,10 +857,10 @@ export async function getUserData(req: Request, res: Response) {
             try {
                 const accountsData = await fetchFbGraph(tokenRow.token, 'me/adaccounts?fields=id,name,account_status,currency,amount_spent');
                 adAccounts = accountsData.data || [];
-                
+
                 // Utiliser les comptes publicitaires de base (sans calcul de total spend)
                 // Le total spend est maintenant calculé dynamiquement avec le filtre de dates
-                
+
             } catch (error) {
                 console.error('❌ Error fetching ad accounts:', error);
                 // Continuer avec une liste vide
@@ -529,7 +925,7 @@ export async function getUserData(req: Request, res: Response) {
 
     } catch (error: any) {
         console.error('❌ Error getting user data:', error);
-        return res.status(500).json({ 
+        return res.status(500).json({
             success: false,
             message: error.message || "Server error",
             error: error.toString()
@@ -554,20 +950,20 @@ export async function getFbData(req: Request, res: Response) {
                 const fbQuery = 'me/adaccounts?fields=id,name,account_id,account_status,currency,timezone_name,business_name,business_id,created_time,amount_spent,balance,spend_cap';
                 console.log('🔍 [getFbData] Facebook Graph API Request (with pagination):', fbQuery);
                 console.log('📊 [getFbData] Using pagination to fetch ALL ad accounts (no limit)...');
-                
+
                 // Utiliser la pagination pour récupérer TOUS les ad accounts
                 const allAccountsData = await fetchFbGraphPaginated(tokenRow.token, fbQuery, undefined, userId, 100);
                 adAccounts = allAccountsData.data || [];
-                
+
                 console.log('✅ [getFbData] Total Ad Accounts retrieved (ALL pages):', adAccounts.length);
                 console.log('📊 [getFbData] Ad accounts with Business Manager:', adAccounts.filter((acc: any) => acc.business_name).length);
                 console.log('📊 [getFbData] Ad accounts without Business Manager:', adAccounts.filter((acc: any) => !acc.business_name).length);
-                
+
                 // Log des Business Managers uniques
                 const uniqueBusinessNames = [...new Set(adAccounts.filter((acc: any) => acc.business_name).map((acc: any) => acc.business_name))];
                 console.log('📊 [getFbData] Unique Business Managers found:', uniqueBusinessNames.length);
                 console.log('📊 [getFbData] Business Managers list:', uniqueBusinessNames);
-                
+
                 // Log d'un échantillon des ad accounts avec leurs infos business
                 console.log('📊 [getFbData] Sample ad accounts (first 10) with business info:', adAccounts.slice(0, 10).map((acc: any) => ({
                     id: acc.id,
@@ -644,12 +1040,12 @@ export async function getAccountCampaigns(req: Request, res: Response) {
         const tokenRow = await getFacebookToken(userId);
 
         const endpoint = `${accountId}/campaigns?fields=id,name,status,effective_status,objective,created_time,updated_time`;
-        
+
         let campaignsData = [];
 
         try {
             const campaigns = await fetchFbGraphPaginated(tokenRow.token, endpoint);
-            
+
             campaignsData = campaigns.data?.map(campaign => ({
                 id: campaign.id,
                 name: campaign.name,
@@ -682,13 +1078,13 @@ export async function getAccountCampaigns(req: Request, res: Response) {
             } else {
                 statusArray = [status];
             }
-            
-            campaignsData = campaignsData.filter(campaign => 
+
+            campaignsData = campaignsData.filter(campaign =>
                 statusArray.includes(campaign.effective_status)
             );
         }
-        
-        return res.json({ 
+
+        return res.json({
             success: true,
             data: campaignsData,
             message: "Campaigns retrieved successfully"
@@ -696,7 +1092,7 @@ export async function getAccountCampaigns(req: Request, res: Response) {
 
     } catch (error: any) {
         console.error(`❌ Error fetching campaigns for account ${req.params.accountId}:`, error);
-        
+
         // Gestion spécifique des erreurs Facebook
         if (error.response?.data?.error) {
             const fbError = error.response.data.error;
@@ -707,7 +1103,7 @@ export async function getAccountCampaigns(req: Request, res: Response) {
                 accountId: req.params.accountId
             });
         }
-        
+
         return res.status(500).json({
             success: false,
             message: error.message || "Server error",
@@ -722,12 +1118,12 @@ export async function getAccountInsights(req: Request, res: Response) {
     try {
         const userId = req.user!.id;
         const { accountId } = req.params;
-        const { 
-            dateRange, 
-            date_preset, 
-            time_range, 
+        const {
+            dateRange,
+            date_preset,
+            time_range,
             fields = 'spend,impressions,clicks,ctr,cpc,cpm,actions',
-            refresh 
+            refresh
         } = req.query;
 
         // Vérifier le format de l'accountId
@@ -743,7 +1139,7 @@ export async function getAccountInsights(req: Request, res: Response) {
 
         // Construire l'endpoint pour les insights
         let endpoint = `${accountId}/insights?fields=${fields}&level=account`;
-        
+
         // Gérer les différents formats de dates
         if (time_range && typeof time_range === 'object') {
             // Gérer time_range[since] et time_range[until]
@@ -790,7 +1186,7 @@ export async function getAccountInsights(req: Request, res: Response) {
 
         console.log(`📊 Found insights for account ${accountId}:`, insightsData);
 
-        return res.json({ 
+        return res.json({
             success: true,
             data: insightsData,
             message: "Insights retrieved successfully"
@@ -812,10 +1208,10 @@ export async function getCampaignAdsets(req: Request, res: Response) {
     try {
         const userId = req.user!.id;
         let { campaignId } = req.params;
-        
+
         // Nettoyer l'ID de campagne (enlever les espaces, préfixes, etc.)
         campaignId = campaignId?.trim();
-        
+
         // Validation de l'ID de campagne
         if (!campaignId || campaignId.length < 5) {
             console.error('❌ Invalid campaign ID format:', campaignId);
@@ -827,9 +1223,9 @@ export async function getCampaignAdsets(req: Request, res: Response) {
         }
 
         console.log('🔍 Fetching adsets for campaign:', campaignId, 'userId:', userId);
-        
+
         const tokenRow = await getFacebookToken(userId);
-        
+
         if (!tokenRow || !tokenRow.token) {
             console.error('❌ No Facebook token found for user:', userId);
             return res.status(401).json({
@@ -840,10 +1236,10 @@ export async function getCampaignAdsets(req: Request, res: Response) {
 
         // Récupérer les ad sets de base de la campagne
         const endpoint = `${campaignId}/adsets?fields=id,name,status,created_time,updated_time`;
-        
+
         console.log('🔍 Facebook API endpoint:', endpoint);
         console.log('🔍 Token preview:', tokenRow.token.substring(0, 20) + '...');
-        
+
         let adsetsResponse;
         try {
             adsetsResponse = await fetchFbGraph(tokenRow.token, endpoint, undefined, userId);
@@ -851,9 +1247,9 @@ export async function getCampaignAdsets(req: Request, res: Response) {
             console.error('❌ Facebook API error:', fbError);
             console.error('❌ Campaign ID used:', campaignId);
             console.error('❌ Error details:', JSON.stringify(fbError.response?.data || fbError, null, 2));
-            
+
             const fbErrorData = fbError.response?.data?.error || {};
-            
+
             // Vérifier si c'est une erreur de permissions ou d'accès
             if (fbErrorData.code === 100 || fbErrorData.type === 'OAuthException' || fbError.response?.status === 403) {
                 return res.status(403).json({
@@ -863,7 +1259,7 @@ export async function getCampaignAdsets(req: Request, res: Response) {
                     errorCode: fbErrorData.code
                 });
             }
-            
+
             // Erreur 400 ou autre erreur de validation
             if (fbError.response?.status === 400) {
                 return res.status(400).json({
@@ -874,7 +1270,7 @@ export async function getCampaignAdsets(req: Request, res: Response) {
                     campaignId: campaignId
                 });
             }
-            
+
             // Autres erreurs
             return res.status(500).json({
                 success: false,
@@ -884,17 +1280,17 @@ export async function getCampaignAdsets(req: Request, res: Response) {
                 campaignId: campaignId
             });
         }
-        
+
         // Vérifier si la réponse contient des données
         if (!adsetsResponse || !adsetsResponse.data) {
             console.warn('⚠️ No data in response for campaign:', campaignId);
-            return res.json({ 
+            return res.json({
                 adsets: [],
                 success: true,
                 message: "No adsets found for this campaign"
             });
         }
-        
+
         console.log('✅ Successfully fetched adsets for campaign:', campaignId, 'count:', adsetsResponse.data?.length || 0);
 
         // Récupérer les métriques pour chaque ad set
@@ -904,7 +1300,7 @@ export async function getCampaignAdsets(req: Request, res: Response) {
                 const insightsEndpoint = `${adset.id}/insights?fields=spend,impressions,clicks,reach,frequency,cpc,cpm,ctr,conversions&date_preset=last_30d`;
                 const insights = await fetchFbGraph(tokenRow.token, insightsEndpoint, undefined, userId);
                 const insightData = insights.data?.[0] || {};
-                
+
                 adsetsWithMetrics.push({
                     ...adset,
                     campaign_id: campaignId,
@@ -943,7 +1339,7 @@ export async function getCampaignAdsets(req: Request, res: Response) {
 
     } catch (error: any) {
         console.error('❌ Error in getCampaignAdsets:', error);
-        
+
         // Gérer les erreurs spécifiques de l'API Facebook
         if (error.response?.status === 400) {
             return res.status(400).json({
@@ -952,8 +1348,8 @@ export async function getCampaignAdsets(req: Request, res: Response) {
                 error: error.response?.data?.error?.message || error.message
             });
         }
-        
-        return res.status(500).json({ 
+
+        return res.status(500).json({
             success: false,
             message: error.message || "Server error",
             details: error.response?.data || null
@@ -967,7 +1363,7 @@ export async function getAdsetAds(req: Request, res: Response) {
         console.log('🔍 getAdsetAds called with adsetId:', req.params.adsetId);
         const userId = req.user!.id;
         const { adsetId } = req.params;
-        
+
         const tokenRow = await getFacebookToken(userId);
 
         // Récupérer les annonces de base de l'ad set
@@ -985,7 +1381,7 @@ export async function getAdsetAds(req: Request, res: Response) {
                 console.log(`📊 Insights for ad ${ad.id}:`, JSON.stringify(insights, null, 2));
                 const insightData = insights.data?.[0] || {};
                 console.log(`📊 Insight data for ad ${ad.id}:`, insightData);
-                
+
                 adsWithMetrics.push({
                     ...ad,
                     adset_id: adsetId,
@@ -1016,7 +1412,7 @@ export async function getAdsetAds(req: Request, res: Response) {
 
     } catch (error: any) {
         console.error('❌ Error in getAdsetAds:', error);
-        return res.status(500).json({ 
+        return res.status(500).json({
             message: error.message || "Server error",
             details: error.response?.data || null
         });
@@ -1029,13 +1425,13 @@ export async function updateAdStatus(req: Request, res: Response) {
         const userId = req.user!.id;
         const { adId } = req.params;
         const { status } = req.body;
-        
+
         console.log(`🔄 updateAdStatus called - User: ${userId}, AdId: ${adId}, Status: ${status}`);
-        
+
         if (!adId) {
             return res.status(400).json({ message: "Ad ID is required" });
         }
-        
+
         if (!status) {
             return res.status(400).json({ message: "Status is required" });
         }
@@ -1067,29 +1463,29 @@ export async function updateAdStatus(req: Request, res: Response) {
         try {
             const verifyEndpoint = `${adId}?fields=id,status,effective_status`;
             const verifyResponse = await fetchFbGraph(tokenRow.token, verifyEndpoint);
-            
+
             // Normaliser le statut comme dans getAdDetails (uniquement basé sur le statut de l'ad)
             const normalizedStatus = normalizeAdStatus(verifyResponse.status);
             const effectiveStatus = verifyResponse.effective_status || verifyResponse.status;
-            
+
             console.log(`✅ Verified ad status after update:`, {
                 status_from_facebook: verifyResponse.status,
                 effective_status: effectiveStatus,
                 normalized_status: normalizedStatus
             });
-            
-            await createLog(userId, "AD_STATUS_UPDATED", { 
-                adId, 
+
+            await createLog(userId, "AD_STATUS_UPDATED", {
+                adId,
                 requested_status: status,
                 actual_status: verifyResponse.status,
                 effective_status: effectiveStatus,
                 normalized_status: normalizedStatus,
-                response: response.data 
+                response: response.data
             });
-            
-            return res.json({ 
+
+            return res.json({
                 success: true,
-                message: "Ad status updated successfully", 
+                message: "Ad status updated successfully",
                 data: {
                     ...response.data,
                     status: normalizedStatus,
@@ -1100,9 +1496,9 @@ export async function updateAdStatus(req: Request, res: Response) {
             // Si la vérification échoue, retourner quand même la réponse de Facebook
             console.error('⚠️ Could not verify ad status after update:', verifyError);
             await createLog(userId, "AD_STATUS_UPDATED", { adId, status, response: response.data });
-            return res.json({ 
+            return res.json({
                 success: true,
-                message: "Ad status updated successfully", 
+                message: "Ad status updated successfully",
                 data: {
                     ...response.data,
                     status: status // Utiliser le statut demandé si la vérification échoue
@@ -1118,13 +1514,13 @@ export async function updateAdStatus(req: Request, res: Response) {
             data: error.response?.data,
             stack: error.stack
         });
-        
+
         // Si c'est une erreur 400 de Facebook, extraire le message utilisateur
         if (error.response?.status === 400 && error.response?.data?.error) {
             const fbError = error.response.data.error;
             const userMessage = fbError.error_user_msg || fbError.message || "Invalid request to Facebook API";
-            
-            return res.status(400).json({ 
+
+            return res.status(400).json({
                 success: false,
                 message: userMessage,
                 errorCode: fbError.code,
@@ -1133,8 +1529,8 @@ export async function updateAdStatus(req: Request, res: Response) {
                 details: error.response.data
             });
         }
-        
-        return res.status(500).json({ 
+
+        return res.status(500).json({
             success: false,
             message: error.message || "Server error",
             details: error.response?.data || null
@@ -1147,7 +1543,7 @@ export async function getAccountTotalSpend(req: Request, res: Response) {
     try {
         const userId = req.user!.id;
         const { accountId } = req.params;
-        const { 
+        const {
             dateRange = 'last_30d',
             date_preset,
             time_range,
@@ -1163,7 +1559,7 @@ export async function getAccountTotalSpend(req: Request, res: Response) {
 
         // Construire l'endpoint pour récupérer le total spend du compte
         let endpoint = `${accountId}/insights?fields=spend`;
-        
+
         // Gérer les paramètres de date
         if (time_range && since && until) {
             endpoint += `&time_range[since]=${since}&time_range[until]=${until}`;
@@ -1192,7 +1588,7 @@ export async function getAccountTotalSpend(req: Request, res: Response) {
 
         // Retourner le total spend
         const totalSpend = insights.data?.[0]?.spend || '0';
-        
+
         // Total spend calculé avec succès
 
         return res.json({
@@ -1230,12 +1626,12 @@ export async function getBusinessAdAccounts(req: Request, res: Response) {
 
         // Créer un AbortController pour cette requête
         const abortController = new AbortController();
-        
+
         // Stocker le controller dans la requête pour pouvoir l'annuler
         (req as any).abortController = abortController;
 
         // Récupérer les comptes publicitaires du Business Manager avec métriques
-        const accountsData = await fetchFbGraph(tokenRow.token, 
+        const accountsData = await fetchFbGraph(tokenRow.token,
             `${businessId}/owned_ad_accounts?fields=id,name,account_status,currency,amount_spent,balance,timezone_name`,
             abortController.signal,
             userId
@@ -1249,11 +1645,11 @@ export async function getBusinessAdAccounts(req: Request, res: Response) {
                 console.log('🛑 Request aborted during account processing');
                 throw new Error('Request aborted');
             }
-            
+
             try {
                 // Construire l'endpoint pour les insights selon le type de période
                 let insightsEndpoint = `${account.id}/insights?fields=spend,impressions,clicks,reach,frequency,cpc,cpm,ctr,conversions`;
-                
+
                 if (since && until) {
                     // Utiliser les dates personnalisées
                     insightsEndpoint += `&time_range[since]=${since}&time_range[until]=${until}`;
@@ -1261,16 +1657,16 @@ export async function getBusinessAdAccounts(req: Request, res: Response) {
                     // Utiliser le preset
                     insightsEndpoint += `&date_preset=${dateRange}`;
                 }
-                
+
                 // Récupérer les insights du compte pour la période sélectionnée
-                const insightsData = await fetchFbGraph(tokenRow.token, 
+                const insightsData = await fetchFbGraph(tokenRow.token,
                     insightsEndpoint,
                     abortController.signal,
                     userId
                 );
-                
+
                 const insights = insightsData.data?.[0] || {};
-                
+
                 // Combiner les données du compte avec les métriques
                 accountsWithMetrics.push({
                     ...account,
@@ -1302,7 +1698,7 @@ export async function getBusinessAdAccounts(req: Request, res: Response) {
             }
         }
 
-        return res.json({ 
+        return res.json({
             success: true,
             data: accountsWithMetrics,
             businessId: businessId
@@ -1310,7 +1706,7 @@ export async function getBusinessAdAccounts(req: Request, res: Response) {
 
     } catch (error: any) {
         console.error('Error getting business ad accounts:', error);
-        return res.status(500).json({ 
+        return res.status(500).json({
             success: false,
             message: error.message || "Server error",
             details: error.response?.data || null
@@ -1326,7 +1722,7 @@ export async function getAdDetails(req: Request, res: Response) {
         const { adId } = req.params;
         const { date_preset, since, until } = req.query;
 
-       
+
         const tokenRow = await getFacebookToken(userId);
 
         // Récupérer les détails de base de l'ad
@@ -1334,14 +1730,14 @@ export async function getAdDetails(req: Request, res: Response) {
         // Le statut peut changer via le calendrier ou manuellement, donc on doit toujours avoir la version la plus récente
         const endpoint = `${adId}?fields=id,name,status,created_time,updated_time,adset_id,campaign_id,creative{id,name,title,body,call_to_action_type,image_url,video_id,thumbnail_url,link_url,object_story_spec}`;
         const adDetails = await fetchFbGraph(tokenRow.token, endpoint);
-        
+
         // Utiliser uniquement le statut de l'ad elle-même (indépendant de la campagne/adset)
         // Normaliser le statut : ACTIVE ou PAUSED
         const normalizedStatus = normalizeAdStatus(adDetails.status);
-        
+
         // Remplacer le status par le statut normalisé
         adDetails.status = normalizedStatus;
-        
+
         console.log('🔍 [getAdDetails] Status from Facebook:', {
             id: adDetails.id,
             name: adDetails.name,
@@ -1365,7 +1761,7 @@ export async function getAdDetails(req: Request, res: Response) {
             } catch (videoError: any) {
                 const errorCode = videoError.response?.data?.error?.code;
                 const errorMessage = videoError.response?.data?.error?.message || videoError.message;
-                
+
                 // Gestion spécifique des erreurs de permissions (#10)
                 if (errorCode === 10) {
                     console.warn(`⚠️ [getAdDetails] Permission denied for video endpoint: ${errorMessage}`);
@@ -1380,7 +1776,7 @@ export async function getAdDetails(req: Request, res: Response) {
         let adMetrics = {};
         try {
             let insightsEndpoint = `${adId}/insights?fields=spend,impressions,clicks,reach,frequency,cpc,cpm,ctr,conversions,conversion_values,actions`;
-            
+
             // Construire l'endpoint avec les paramètres de date appropriés
             if (since && until) {
                 insightsEndpoint += `&time_range[since]=${since}&time_range[until]=${until}`;
@@ -1393,13 +1789,13 @@ export async function getAdDetails(req: Request, res: Response) {
                 insightsEndpoint += `&date_preset=today`;
                 console.log(`🔍 [getAdDetails] Using default date_preset: today`);
             }
-            
+
             console.log(`🔍 [getAdDetails] Full insights endpoint: ${insightsEndpoint}`);
             const insights = await fetchFbGraph(tokenRow.token, insightsEndpoint, undefined, userId);
             const insightData = insights.data?.[0] || {};
             console.log('🔍 [getAdDetails] Insight data:', insightData);
             console.log('🔍 [getAdDetails] Query params received:', { date_preset, since, until });
-            
+
             // Compter les résultats depuis les actions (comme dans la vérification manuelle)
             // Priorité: utiliser conversions/conversion_values de Facebook (plus fiable, évite les doublons)
             // Sinon, compter uniquement les types exacts 'lead', 'purchase', 'conversion' (pas les variations)
@@ -1418,7 +1814,7 @@ export async function getAdDetails(req: Request, res: Response) {
                     return total;
                 }, 0);
             }
-            
+
             adMetrics = {
                 spend: parseFloat(insightData.spend || 0),
                 impressions: parseInt(insightData.impressions || 0),
@@ -1433,18 +1829,18 @@ export async function getAdDetails(req: Request, res: Response) {
                 frequency: parseFloat(insightData.frequency || 0),
                 conversion_rate: insightData.clicks > 0 ? (parseFloat(insightData.conversions || insightData.conversion_values || 0) / insightData.clicks) * 100 : 0
             };
-            
+
             console.log(`🔍 [getAdDetails] Results from actions: ${resultsFromActions}, conversions: ${adMetrics.conversions}`);
             console.log('🔍 Ad metrics:', adMetrics);
-            
+
             // Vérifier immédiatement le stop loss si on utilise "today" (métriques du jour)
             const isTodayMetrics = !since && !until && (!date_preset || date_preset === 'today');
             console.log(`🔍 [getAdDetails] Checking stop loss: isTodayMetrics=${isTodayMetrics}, spend=${adMetrics.spend}`);
-            
+
             if (isTodayMetrics && adMetrics.spend > 0) {
                 try {
                     console.log(`🔍 [getAdDetails] Triggering immediate stop loss check for ad ${adId}`);
-                    
+
                     // Compter les résultats (conversions, leads, purchases)
                     // Priorité: utiliser conversions/conversion_values de Facebook (plus fiable, évite les doublons)
                     // Sinon, compter uniquement les types exacts 'lead', 'purchase', 'conversion' (pas les variations)
@@ -1460,15 +1856,15 @@ export async function getAdDetails(req: Request, res: Response) {
                             return total;
                         }, 0);
                     }
-                    
+
                     console.log(`🔍 [getAdDetails] Current metrics: spend=$${adMetrics.spend}, results=${results}`);
-                    
+
                     // Vérifier les conditions de stop loss
                     const { checkStopLossConditions } = await import('./scheduleController.js');
                     const stopLossCheck = await checkStopLossConditions(userId, adId);
-                    
+
                     console.log(`🔍 [getAdDetails] Stop loss check result: shouldStop=${stopLossCheck.shouldStop}, reason=${stopLossCheck.reason}`);
-                    
+
                     if (stopLossCheck.shouldStop) {
                         console.log(`🛑 Stop loss triggered immediately in getAdDetails for ad ${adId}: ${stopLossCheck.reason}`);
                     }
@@ -1555,7 +1951,7 @@ export async function testAdAccounts(req: Request, res: Response) {
 
         // Test 2: Endpoint avec champs détaillés
         try {
-            const detailedData = await fetchFbGraph(tokenRow.token, 
+            const detailedData = await fetchFbGraph(tokenRow.token,
                 'me/adaccounts?fields=id,name,account_status,currency,amount_spent,balance,timezone_name,business{id,name}'
             );
             results.tests.push({
@@ -1598,7 +1994,7 @@ export async function testAdAccounts(req: Request, res: Response) {
 
     } catch (error: any) {
         console.error('Error in ad accounts test:', error);
-        return res.status(500).json({ 
+        return res.status(500).json({
             success: false,
             message: error.message || "Server error",
             details: error.response?.data || null
@@ -1680,7 +2076,7 @@ export async function testFacebookSimple(req: Request, res: Response) {
 
     } catch (error: any) {
         console.error('Error in simple Facebook test:', error);
-        return res.status(500).json({ 
+        return res.status(500).json({
             success: false,
             message: error.message || "Server error",
             details: error.response?.data || null
@@ -1782,7 +2178,7 @@ export async function facebookDiagnostic(req: Request, res: Response) {
 
     } catch (error: any) {
         console.error('Error in Facebook diagnostic:', error);
-        return res.status(500).json({ 
+        return res.status(500).json({
             success: false,
             message: error.message || "Server error",
             details: error.response?.data || null
@@ -1799,7 +2195,7 @@ export async function disconnectFacebook(req: Request, res: Response) {
         const { error } = await supabase
             .from('access_tokens')
             .delete()
-            .eq('userId', userId);
+            .eq('userId', userId)  // Utiliser userId (camelCase) - Supabase/PostgREST convertit automatiquement;
 
         if (error) {
             console.error('Error deleting token:', error);
@@ -1824,7 +2220,7 @@ export async function clearFacebookCache(req: Request, res: Response) {
         const { error } = await supabase
             .from('logs')
             .delete()
-            .eq('userId', userId)
+            .eq('userId', userId)  // Utiliser userId (camelCase) - Supabase/PostgREST convertit automatiquement
             .in('action', ['TOKEN_SAVED', 'FB_DATA_RETRIEVED', 'AD_ACCOUNTS_RETRIEVED']);
 
         if (error) {
@@ -1860,12 +2256,12 @@ setInterval(() => {
 export async function abortFacebookRequests(req: Request, res: Response) {
     try {
         const userId = req.user!.id;
-        
+
         console.log('🛑 Aborting Facebook requests for user:', userId);
-        
+
         // Récupérer les AbortControllers actifs pour cet utilisateur
         const userRequests = activeRequests.get(userId) || [];
-        
+
         // Annuler toutes les requêtes actives
         userRequests.forEach(controller => {
             if (!controller.signal.aborted) {
@@ -1873,15 +2269,15 @@ export async function abortFacebookRequests(req: Request, res: Response) {
                 controller.abort();
             }
         });
-        
+
         // Nettoyer la liste des requêtes
         activeRequests.set(userId, []);
-        
-        await createLog(userId, "REQUESTS_ABORTED", { 
-            abortedCount: userRequests.length 
+
+        await createLog(userId, "REQUESTS_ABORTED", {
+            abortedCount: userRequests.length
         });
-        
-        return res.json({ 
+
+        return res.json({
             success: true,
             message: "Facebook requests aborted successfully",
             abortedCount: userRequests.length
@@ -1889,9 +2285,9 @@ export async function abortFacebookRequests(req: Request, res: Response) {
 
     } catch (error: any) {
         console.error('Error aborting requests:', error);
-        return res.status(500).json({ 
+        return res.status(500).json({
             success: false,
-            message: error.message || "Server error" 
+            message: error.message || "Server error"
         });
     }
 }
@@ -1905,9 +2301,9 @@ export async function handleOAuthCallback(req: Request, res: Response) {
             method: req.method,
             url: req.url
         });
-        
+
         const { code, redirectUri } = req.body;
-        
+
         // Vérifier que les variables d'environnement sont définies
         if (!process.env.FB_CLIENT_ID) {
             console.error('❌ FB_CLIENT_ID not set in environment variables');
@@ -1916,7 +2312,7 @@ export async function handleOAuthCallback(req: Request, res: Response) {
                 message: 'Server configuration error: FB_CLIENT_ID not set'
             });
         }
-        
+
         if (!process.env.FB_APP_SECRET) {
             console.error('❌ FB_APP_SECRET not set in environment variables');
             return res.status(500).json({
@@ -1924,7 +2320,7 @@ export async function handleOAuthCallback(req: Request, res: Response) {
                 message: 'Server configuration error: FB_APP_SECRET not set'
             });
         }
-        
+
         if (!code) {
             return res.status(400).json({
                 success: false,
@@ -1952,7 +2348,7 @@ export async function handleOAuthCallback(req: Request, res: Response) {
         });
 
         const { access_token, expires_in } = tokenResponse.data;
-        
+
         if (!access_token) {
             return res.status(400).json({
                 success: false,
@@ -1987,7 +2383,7 @@ export async function handleOAuthCallback(req: Request, res: Response) {
 
     } catch (error: any) {
         console.error('❌ OAuth callback error:', error.response?.data || error.message);
-        
+
         return res.status(500).json({
             success: false,
             message: 'An error occurred during authentication',

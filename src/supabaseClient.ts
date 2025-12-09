@@ -1,9 +1,15 @@
 import { createClient } from '@supabase/supabase-js';
+import dotenv from 'dotenv';
+
+// Charger les variables d'environnement en premier
+dotenv.config();
 
 // Configuration Supabase optimisée pour le backend
-// ⚠️ IMPORTANT: Utilise UNIQUEMENT les variables d'environnement, pas de valeurs par défaut
-const supabaseUrl = process.env.SUPABASE_URL;
-const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY;
+// IMPORTANT: Utilise UNIQUEMENT les variables d'environnement, pas de valeurs par défaut
+
+
+const supabaseUrl = process.env.SUPABASE_URL
+const supabaseKey = process.env.SUPABASE_ANON_KEY
 
 // Vérification que les variables d'environnement sont définies
 if (!supabaseUrl) {
@@ -320,7 +326,7 @@ export const supabase = createClient<Database>(supabaseUrl, supabaseKey, {
     fetch: (url, options = {}) => {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 10000);
-      
+
       return fetch(url, {
         ...options,
         signal: controller.signal
@@ -350,7 +356,7 @@ export interface AuthSession {
 }
 
 // Types pour les actions de log
-export type LogAction = 
+export type LogAction =
   | 'USER_LOGIN'
   | 'USER_LOGOUT'
   | 'USER_REGISTER'
