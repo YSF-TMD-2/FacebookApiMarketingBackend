@@ -542,8 +542,19 @@ export async function saveAccessToken(req: Request, res: Response) {
         // Valider le token avec Facebook
         let fbData = null;
         try {
-            fbData = await fetchFbGraph(accessToken);
+            // console.log('🔍 Validating Facebook token for user:', userId);
+            fbData = await fetchFbGraph(accessToken, 'me?fields=id,name,email');
+            // console.log('✅ Facebook token validated successfully');
         } catch (error: any) {
+            // console.error('❌ Facebook token validation failed:', {
+            //     message: error?.message,
+            //     status: error.response?.status,
+            //     errorCode: error.response?.data?.error?.code,
+            //     errorMessage: error.response?.data?.error?.message,
+            //     errorType: error.response?.data?.error?.type,
+            //     userId: userId
+            // });
+
             await createLog(userId, "UPLOAD_TOKEN_FAILED", {
                 error: error?.message || error,
                 status: error.response?.status,
@@ -562,9 +573,14 @@ export async function saveAccessToken(req: Request, res: Response) {
                 }
             }
 
+            // Retourner plus de détails pour le débogage
+            const fbError = error.response?.data?.error || {};
             return res.status(400).json({
                 message: "Failed to validate access token with Facebook",
-                error: error.response?.data?.error?.message || error.message
+                error: fbError.message || error.message,
+                errorCode: fbError.code,
+                errorType: fbError.type,
+                details: fbError
             });
         }
 

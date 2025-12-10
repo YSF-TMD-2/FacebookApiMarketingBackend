@@ -9,7 +9,8 @@ const router = Router();
 // OAuth callback route
 router.post('/oauth/callback', handleOAuthCallback);
 
-router.post('/token' , saveAccessToken)
+// Sauvegarder le token Facebook (nécessite authentification)
+router.post('/token', protect, saveAccessToken)
 
 // get user Facebook data
 router.get("/user-data", protect, getUserData);
